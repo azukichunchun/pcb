@@ -9,9 +9,9 @@ MODE=$5 # [none, AS, AE]
 
 
 DATA=/go/to/data # YOU NEED TO FIX IT
+DATA=/data2/yhiro/data
 
-
-TRAINER=ALVLM
+TRAINER=ALVLM_CoCoOp
 CTP="end"  # class token position (end or middle)
 NCTX=16  # number of context tokens
 SHOTS=-1  # number of shots (1, 2, 4, 8, 16)
@@ -63,7 +63,8 @@ elif [ "$MODE" = "none" ]; then
         TRAINER.COOP.CLASS_TOKEN_POSITION ${CTP} \
         DATASET.NUM_SHOTS ${SHOTS} \
         TRAINER.COOPAL.METHOD ${ALMETHOD} \
-        TRAINER.COOPAL.GAMMA 0.1
+        TRAINER.COOPAL.GAMMA 0.1 \
+        DATASET.SUBSAMPLE_CLASSES base
 else 
     echo "MODE should be selected in [none, AS, AE]"
 fi 

@@ -1,5 +1,6 @@
 import os.path as osp
 from random import sample 
+from collections import OrderedDict
 import time 
 import json 
 
@@ -75,6 +76,7 @@ class PromptLearner(nn.Module):
         ctx_init = cfg.TRAINER.COOP.CTX_INIT
         dtype = clip_model.dtype
         ctx_dim = clip_model.ln_final.weight.shape[0]
+        vis_dim = clip_model.visual.output_dim
         clip_imsize = clip_model.visual.input_resolution
         cfg_imsize = cfg.INPUT.SIZE[0]
         assert cfg_imsize == clip_imsize, f"cfg_imsize ({cfg_imsize}) must equal to clip_imsize ({clip_imsize})"
@@ -154,71 +156,58 @@ class PromptLearner(nn.Module):
 
         self.ctx = nn.Parameter(ctx_vectors)  # to be optimized
 
-    def forward(self):
-        ctx = self.ctx
-        if ctx.dim() == 2:
-            ctx = ctx.unsqueeze(0).expand(self.n_cls, -1, -1)
+        self.meta_net = nn.Sequential(OrderedDict([
+            ("linear1", nn.Linear(vis_dim, vis_dim // 16)),
+            ("relu", nn.ReLU(inplace=True)),
+            ("linear2", nn.Linear(vis_dim // 16, ctx_dim))
+        ]))
 
+        if cfg.TRAINER.COCOOP.PREC == "fp16":
+            self.meta_net.half()
+
+
+    def construct_prompts(self, ctx, prefix, suffix, label=None):
+        # dim0 is either batch_size (during training) or n_cls (during testing)
+        # ctx: context tokens, with shape of (dim0, n_ctx, ctx_dim)
+        # prefix: the sos token, with shape of (n_cls, 1, ctx_dim)
+        # suffix: remaining tokens, with shape of (n_cls, *, ctx_dim)
+
+        if label is not None:
+            prefix = prefix[label]
+            suffix = suffix[label]
+
+        prompts = torch.cat(
+            [
+                prefix,  # (dim0, 1, dim)
+                ctx,     # (dim0, n_ctx, dim)
+                suffix,  # (dim0, *, dim)
+            ],
+            dim=1,
+        )
+
+        return prompts    
+
+
+    def forward(self, im_features=None):
         prefix = self.token_prefix
         suffix = self.token_suffix
-
-        if self.class_token_position == "end":
-            prompts = torch.cat(
-                [
-                    prefix,  # (n_cls, 1, dim)
-                    ctx,     # (n_cls, n_ctx, dim)
-                    suffix,  # (n_cls, *, dim)
-                ],
-                dim=1,
-            )
-
-        elif self.class_token_position == "middle":
-            half_n_ctx = self.n_ctx // 2
-            prompts = []
-            for i in range(self.n_cls):
-                name_len = self.name_lens[i]
-                prefix_i = prefix[i : i + 1, :, :]
-                class_i = suffix[i : i + 1, :name_len, :]
-                suffix_i = suffix[i : i + 1, name_len:, :]
-                ctx_i_half1 = ctx[i : i + 1, :half_n_ctx, :]
-                ctx_i_half2 = ctx[i : i + 1, half_n_ctx:, :]
-                prompt = torch.cat(
-                    [
-                        prefix_i,     # (1, 1, dim)
-                        ctx_i_half1,  # (1, n_ctx//2, dim)
-                        class_i,      # (1, name_len, dim)
-                        ctx_i_half2,  # (1, n_ctx//2, dim)
-                        suffix_i,     # (1, *, dim)
-                    ],
-                    dim=1,
-                )
-                prompts.append(prompt)
-            prompts = torch.cat(prompts, dim=0)
-
-        elif self.class_token_position == "front":
-            prompts = []
-            for i in range(self.n_cls):
-                name_len = self.name_lens[i]
-                prefix_i = prefix[i : i + 1, :, :]
-                class_i = suffix[i : i + 1, :name_len, :]
-                suffix_i = suffix[i : i + 1, name_len:, :]
-                ctx_i = ctx[i : i + 1, :, :]
-                prompt = torch.cat(
-                    [
-                        prefix_i,  # (1, 1, dim)
-                        class_i,   # (1, name_len, dim)
-                        ctx_i,     # (1, n_ctx, dim)
-                        suffix_i,  # (1, *, dim)
-                    ],
-                    dim=1,
-                )
-                prompts.append(prompt)
-            prompts = torch.cat(prompts, dim=0)
-
-        else:
-            raise ValueError
-
+        ctx = self.ctx                     # (n_ctx, ctx_dim)
+        bias = self.meta_net(im_features)  # (batch, ctx_dim)
+        bias = bias.unsqueeze(1)           # (batch, 1, ctx_dim)
+        ctx = ctx.unsqueeze(0)             # (1, n_ctx, ctx_dim)
+        import pdb; pdb.set_trace()
+        ctx_shifted = ctx + bias           # (batch, n_ctx, ctx_dim)
+        
+        # Use instance-conditioned context tokens for all classes
+        prompts = []
+        for ctx_shifted_i in ctx_shifted:
+            ctx_i = ctx_shifted_i.unsqueeze(0).expand(self.n_cls, -1, -1)
+            pts_i = self.construct_prompts(ctx_i, prefix, suffix)  # (n_cls, n_tkn, ctx_dim)
+            prompts.append(pts_i)
+        prompts = torch.stack(prompts)
+        
         return prompts
+
 
 
 class CustomCLIP(nn.Module):
@@ -246,46 +235,54 @@ class CustomCLIP(nn.Module):
                 self.n_class_desc.append(len(desc_dict[name]))
             
         
-    def forward(self, image, get_feature=False):
-        image_features = self.image_encoder(image.type(self.dtype))
-        
-        prompts = self.prompt_learner()
+    def forward(self, image, label=None, get_feature=False):
+
         tokenized_prompts = self.tokenized_prompts
-        import pdb; pdb.set_trace()
-                
-    
-        text_features = self.text_encoder(prompts, tokenized_prompts)
-        
-        if self.cfg.TRAINER.COOPAL.AEPATH:
-            tmp = []
-            start = 0
-            for n in self.n_class_desc:
-                tmp.append(text_features[start:start+n].mean(dim=0))
-                start += n
-            text_features = torch.stack(tmp)
-
-        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-
         logit_scale = self.logit_scale.exp()
-        logits = logit_scale * image_features @ text_features.t()
+
+        image_features = self.image_encoder(image.type(self.dtype))
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                
+        prompts = self.prompt_learner(image_features)
         
-        if self.cfg.TRAINER.COOPAL.ASPATH:
-            tmp = [] 
-            start = 0
-            for n in self.n_class_desc:
-                tmp.append(torch.sum(logits[:, start:start+n], dim=1)/n)
-                start += n
-            logits = torch.stack(tmp, dim=1)
+        logits = []
+        text_features = []
+        for pts_i, imf_i in zip(prompts, image_features):
+            txf = self.text_encoder(pts_i, tokenized_prompts)
+            text_features.append(txf)
+            txf = txf / txf.norm(dim=-1, keepdim=True)
+            l_i = logit_scale * imf_i @ txf.t()
+            logits.append(l_i)
+        logits = torch.stack(logits)
+        text_features = torch.stack(text_features)
+                
+        # if self.cfg.TRAINER.COOPAL.AEPATH:
+        #     tmp = []
+        #     start = 0
+        #     for n in self.n_class_desc:
+        #         tmp.append(text_features[start:start+n].mean(dim=0))
+        #         start += n
+        #     text_features = torch.stack(tmp)
+
+
+        # if self.cfg.TRAINER.COOPAL.ASPATH:
+        #     tmp = [] 
+        #     start = 0
+        #     for n in self.n_class_desc:
+        #         tmp.append(torch.sum(logits[:, start:start+n], dim=1)/n)
+        #         start += n
+        #     logits = torch.stack(tmp, dim=1)
 
         if get_feature:
             return logits, image_features
+        elif self.prompt_learner.training:
+            return F.cross_entropy(logits, label)
         else:
             return logits
 
 
 @TRAINER_REGISTRY.register()
-class ALVLM(TrainerX):
+class ALVLM_CoCoOp(TrainerX):
     """Context Optimization (CoOp).
 
     Learning to Prompt for Vision-Language Models
@@ -323,6 +320,14 @@ class ALVLM(TrainerX):
             if "prompt_learner" not in name:
                 param.requires_grad_(False)
 
+        # Double check
+        enabled = set()
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                enabled.add(name)
+        print(f"Parameters to be updated: {enabled}")
+
+
         if cfg.MODEL.INIT_WEIGHTS:
             load_pretrained_weights(self.model.prompt_learner, cfg.MODEL.INIT_WEIGHTS)
 
@@ -337,33 +342,35 @@ class ALVLM(TrainerX):
 
         # Note that multi-gpu training could be slow because CLIP's size is
         # big, which slows down the copy operation in DataParallel
-        device_count = torch.cuda.device_count()
-        if device_count > 1:
-            print(f"Multiple GPUs detected (n_gpus={device_count}), use all of them!")
-            self.model = nn.DataParallel(self.model)
-            #print(self.model)
+        # device_count = torch.cuda.device_count()
+        # if device_count > 1:
+        #     print(f"Multiple GPUs detected (n_gpus={device_count}), use all of them!")
+        #     self.model = nn.DataParallel(self.model)
+        #     #print(self.model)
 
     def forward_backward(self, batch):
         image, label = self.parse_batch_train(batch)
         
+        model = self.model
+        optim = self.optim
+        scaler = self.scaler
+        
         prec = self.cfg.TRAINER.COOP.PREC
         if prec == "amp":
             with autocast():
-                output = self.model(image)
-                loss = F.cross_entropy(output, label)
-            self.optim.zero_grad()
-            self.scaler.scale(loss).backward()
-            self.scaler.step(self.optim)
-            self.scaler.update()
+                loss = model(image, label)
+            optim.zero_grad()
+            scaler.scale(loss).backward()
+            scaler.step(optim)
+            scaler.update()
         else:
-            output = self.model(image)
-            loss = F.cross_entropy(output, label)
-            self.model_backward_and_update(loss)
+            loss = model(image, label)
+            optim.zero_grad()
+            loss.backward()
+            optim.step()
 
-        loss_summary = {
-            "loss": loss.item(),
-            "acc": compute_accuracy(output, label)[0].item(),
-        }
+        loss_summary = {"loss": loss.item()}
+
 
         if (self.batch_idx + 1) == self.num_batches:
             self.update_lr()
@@ -443,7 +450,7 @@ class ALVLM(TrainerX):
         n_cand = int(len(unlabeled_dst) * self.cfg.TRAINER.COOPAL.GAMMA) # 10% of entire dataset
 
         dataset._train_x = []
-        for i in range(8):
+        for i in range(1): # クラス数分のデータをサンプルし如何にバランスよくサンプルできるか
             start = time.time()
 
             if i == 0:
@@ -470,19 +477,18 @@ class ALVLM(TrainerX):
                 print("NotImplementedError")
                 idx = U_index
             
-            if i != 0:
-                statistics = torch.zeros(self.num_classes)
-                for elem in dataset._train_x:
-                    statistics[elem.label] += 1
-                selector = PCB(self.cfg, self.model, unlabeled_dst, idx, dataset.get_num_classes(unlabeled_dst), statistics, self.device)
-                idx = selector.select(n_query)
-            
+            #if i != 0:
+            statistics = torch.zeros(self.num_classes)
+            for elem in dataset._train_x:
+                statistics[elem.label] += 1
+            selector = PCB(self.cfg, self.model, unlabeled_dst, idx, dataset.get_num_classes(unlabeled_dst), statistics, self.device)
+            idx = selector.select(n_query)
+        
             # Filtering 
             for k in idx:
                 dataset._train_x.append(unlabeled_dst[k])
                 U_index.remove(k)
             assert len(U_index) + len(dataset.train_x) == len(unlabeled_dst), f"u index: {len(U_index)}\t train set: {len(dataset.train_x)}\t unlabeled_dst: {len(unlabeled_dst)}"
-            
             self.train_loader_x = build_data_loader(
                 self.cfg,
                 sampler_type=self.cfg.DATALOADER.TRAIN_X.SAMPLER,
@@ -506,4 +512,3 @@ class ALVLM(TrainerX):
         for i in range(len(self.acc)):
             print(f"{i}: {self.acc[i]}")
         print("=======================")    
-            

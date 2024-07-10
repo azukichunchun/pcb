@@ -20,7 +20,8 @@ import datasets.ucf101
 
 
 import trainers.alvlm
-
+import trainers.alvlm_cocoop
+import trainers.cocoop
 
 def print_args(args, cfg):
     print("***************")
@@ -99,6 +100,13 @@ def extend_cfg(cfg):
     cfg.TRAINER.COOPAL.ASPATH = ""
     cfg.TRAINER.COOPAL.AEPATH = ""
     cfg.TRAINER.COOPAL.GAMMA = 0.1
+    cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
+
+    cfg.TRAINER.COCOOPAL = CN() 
+    cfg.TRAINER.COCOOPAL.METHOD = ""
+    cfg.TRAINER.COCOOPAL.ASPATH = ""
+    cfg.TRAINER.COCOOPAL.AEPATH = ""
+    cfg.TRAINER.COCOOPAL.GAMMA = 0.1
     cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
 
     cfg.TRAINER.MAPLE = CN()
