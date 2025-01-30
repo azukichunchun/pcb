@@ -56,20 +56,28 @@ class Clustering(AL):
         distances = pairwise_distances(kmeans.cluster_centers_, img_features)
         cluster_counts = Counter(kmeans.labels_)
         sample_idx = []
+        
         for cluster_id, d in enumerate(distances):
             d_minid = np.argsort(d)
             d_minid = d_minid[:int(cluster_counts[cluster_id] * self.cfg.TRAINER.COOPAL.GAMMA)]
-            sample_idx.append(d_minid)
-        sample_idx = np.array(sample_idx)
-        sample_idx = np.transpose(sample_idx)
-        sample_idx = np.concatenate(sample_idx)
-        sample_idx = np.array(list(set(sample_idx)))
+            sample_idx.append(d_minid.tolist())
+        
+        # 重心から近い順にidを並び替える
+        max_length = max(len(sublist) for sublist in sample_idx)
+        sample_idx_trans = []
+        for i in range(max_length):
+            for sublist in sample_idx:
+                if i < len(sublist):
+                    sample_idx_trans.append(sublist[i])
+        
+        # 重複を取り除く
+        sample_idx_trans = list(dict.fromkeys(sample_idx_trans))
+        sample_idx_trans = np.array(sample_idx_trans)
 
-        return sample_idx
+        return sample_idx_trans
 
     def select(self, n_query, **kwargs):
         selected_indices = self.run(n_query)
-        import pdb; pdb.set_trace()
         
         Q_index = [self.U_index[idx] for idx in selected_indices]
 

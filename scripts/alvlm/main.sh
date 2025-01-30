@@ -15,7 +15,7 @@ TRAINER=ALVLM_CoCoOp
 CTP="end"  # class token position (end or middle)
 NCTX=16  # number of context tokens
 SHOTS=-1  # number of shots (1, 2, 4, 8, 16)
-CSC=True  # class-specific context (False or True)
+CSC=False  # class-specific context (False or True)
 
 DIR=output/${DATASET}/${TRAINER}/${CFG}_${SHOTS}shots/nctx${NCTX}_csc${CSC}_ctp${CTP}_al${ALMETHOD}_mode${MODE}/seed${SEED}
 if [ -d "$DIR" ]; then
@@ -63,7 +63,7 @@ elif [ "$MODE" = "none" ]; then
         TRAINER.COOP.CLASS_TOKEN_POSITION ${CTP} \
         DATASET.NUM_SHOTS ${SHOTS} \
         TRAINER.COOPAL.METHOD ${ALMETHOD} \
-        TRAINER.COOPAL.GAMMA 0.1 \
+        TRAINER.COOPAL.GAMMA 0.6 \
         DATASET.SUBSAMPLE_CLASSES base
 else 
     echo "MODE should be selected in [none, AS, AE]"

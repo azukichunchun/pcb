@@ -19,7 +19,8 @@ from dassl.data.data_manager import build_data_loader
 
 from clip import clip
 from clip.simple_tokenizer import SimpleTokenizer as _Tokenizer
-from .active_learning.pcb import PCB
+#from .active_learning.pcb import PCB
+from .active_learning.pcb_clustering import PCB
 from .active_learning.badge import BADGE
 from .active_learning.coreset import Coreset
 from .active_learning.entropy import Entropy
@@ -195,7 +196,6 @@ class PromptLearner(nn.Module):
         bias = self.meta_net(im_features)  # (batch, ctx_dim)
         bias = bias.unsqueeze(1)           # (batch, 1, ctx_dim)
         ctx = ctx.unsqueeze(0)             # (1, n_ctx, ctx_dim)
-        import pdb; pdb.set_trace()
         ctx_shifted = ctx + bias           # (batch, n_ctx, ctx_dim)
         
         # Use instance-conditioned context tokens for all classes
@@ -448,7 +448,7 @@ class ALVLM_CoCoOp(TrainerX):
         else:
             n_query = dataset.get_num_classes(unlabeled_dst)
         n_cand = int(len(unlabeled_dst) * self.cfg.TRAINER.COOPAL.GAMMA) # 10% of entire dataset
-
+        
         dataset._train_x = []
         for i in range(1): # クラス数分のデータをサンプルし如何にバランスよくサンプルできるか
             start = time.time()
@@ -481,6 +481,7 @@ class ALVLM_CoCoOp(TrainerX):
             statistics = torch.zeros(self.num_classes)
             for elem in dataset._train_x:
                 statistics[elem.label] += 1
+            
             selector = PCB(self.cfg, self.model, unlabeled_dst, idx, dataset.get_num_classes(unlabeled_dst), statistics, self.device)
             idx = selector.select(n_query)
         
@@ -499,7 +500,7 @@ class ALVLM_CoCoOp(TrainerX):
                 tfm=build_transform(self.cfg, is_train=True),
                 is_train=True,
                 dataset_wrapper=None
-            )   
+            )
             # self.model.train()
             self.before_train()
             for self.epoch in range(self.start_epoch, self.max_epoch):
