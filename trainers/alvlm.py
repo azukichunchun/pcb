@@ -1,7 +1,8 @@
 import os.path as osp
 from random import sample 
 import time 
-import json 
+import json
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -18,11 +19,13 @@ from dassl.data.data_manager import build_data_loader
 
 from clip import clip
 from clip.simple_tokenizer import SimpleTokenizer as _Tokenizer
-from .active_learning.pcb import PCB
+from .active_learning.pcb import PCB as PCB_ONE_TIME
+from .active_learning.pcb_fill import PCB as PCB_FILL
 from .active_learning.badge import BADGE
 from .active_learning.coreset import Coreset
 from .active_learning.entropy import Entropy
 from .active_learning.clustering import Clustering
+from .active_learning.clustering_one_sample import ClusteringOneSample
 
 _tokenizer = _Tokenizer()
 
@@ -40,8 +43,12 @@ def load_clip_to_cpu(cfg):
 
     except RuntimeError:
         state_dict = torch.load(model_path, map_location="cpu")
+    design_details = {"trainer": 'CoOp',
+                      "vision_depth": 0,
+                      "language_depth": 0, "vision_ctx": 0,
+                      "language_ctx": 0,}
 
-    model = clip.build_model(state_dict or model.state_dict())
+    model = clip.build_model(state_dict or model.state_dict(), design_details)
     
     return model
 
@@ -251,9 +258,7 @@ class CustomCLIP(nn.Module):
         
         prompts = self.prompt_learner()
         tokenized_prompts = self.tokenized_prompts
-        import pdb; pdb.set_trace()
-                
-    
+                    
         text_features = self.text_encoder(prompts, tokenized_prompts)
         
         if self.cfg.TRAINER.COOPAL.AEPATH:
@@ -377,7 +382,7 @@ class ALVLM(TrainerX):
         label = label.to(self.device)
         return input, label
 
-    def load_model(self, directory, epoch=None):
+    def load_model(self, directory, epoch=None, round=None):
         if not directory:
             print("Note that load_model() is skipped as no pretrained model is given")
             return
@@ -389,6 +394,9 @@ class ALVLM(TrainerX):
 
         if epoch is not None:
             model_file = "model.pth.tar-" + str(epoch)
+
+        if round is not None:
+            model_file = f"{model_file}-{round}"
 
         for name in names:
             model_path = osp.join(directory, name, model_file)
@@ -416,7 +424,6 @@ class ALVLM(TrainerX):
         self.build_model()
         
     def after_train(self):
-        print("Finish training")
         do_test = not self.cfg.TEST.NO_TEST
         if do_test:
             if self.cfg.TEST.FINAL_MODEL == "best_val":
@@ -428,6 +435,29 @@ class ALVLM(TrainerX):
             
         # Close writer
         self.close_writer()
+
+    def after_epoch(self, i):
+        last_epoch = (self.epoch + 1) == self.max_epoch
+        do_test = not self.cfg.TEST.NO_TEST
+        meet_checkpoint_freq = (
+            (self.epoch + 1) % self.cfg.TRAIN.CHECKPOINT_FREQ == 0
+            if self.cfg.TRAIN.CHECKPOINT_FREQ > 0 else False
+        )
+
+        if do_test and self.cfg.TEST.FINAL_MODEL == "best_val":
+            curr_result = self.test(split="val")
+            is_best = curr_result > self.best_result
+            if is_best:
+                self.best_result = curr_result
+                self.save_model(
+                    self.epoch,
+                    self.output_dir,
+                    val_result=curr_result,
+                    model_name="model-best.pth.tar"
+                )
+
+        if meet_checkpoint_freq or last_epoch:
+            self.save_model(self.epoch, self.output_dir, model_name=f"model.pth.tar-{self.epoch+1}-{i}")
         
     def train(self):
         """Generic training loops."""
@@ -441,9 +471,8 @@ class ALVLM(TrainerX):
         else:
             n_query = dataset.get_num_classes(unlabeled_dst)
         n_cand = int(len(unlabeled_dst) * self.cfg.TRAINER.COOPAL.GAMMA) # 10% of entire dataset
-
         dataset._train_x = []
-        for i in range(8):
+        for i in range(self.cfg.TRAIN.MAX_ROUND): # クラス数分のデータをサンプルし如何にバランスよくサンプルできるか
             start = time.time()
 
             if i == 0:
@@ -451,7 +480,8 @@ class ALVLM(TrainerX):
 
             #if self.cfg.TRAINER.COOPAL.METHOD == "random" or i ==0:
             if self.cfg.TRAINER.COOPAL.METHOD == "random":
-                idx = sample(U_index, n_query)
+                # idx = sample(U_index, n_query)
+                idx = sample(U_index, n_cand)
             elif self.cfg.TRAINER.COOPAL.METHOD == "entropy":
                 selector = Entropy(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), self.device)
                 idx = selector.select(n_cand)
@@ -463,26 +493,35 @@ class ALVLM(TrainerX):
                 selector = Coreset(self.cfg, self.model, unlabeled_dst, U_index, val_x, dataset.get_num_classes(unlabeled_dst))
                 idx = selector.select(n_cand)
             elif self.cfg.TRAINER.COOPAL.METHOD == "clustering":
-                selector = Clustering(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), n_cand, self.device)
+                selector = Clustering(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), n_cand, False, self.device)
                 idx = selector.select(n_cand)
-            
+            elif self.cfg.TRAINER.COOPAL.METHOD == "clustering_ent":
+                selector = Clustering(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), n_cand, True, self.device)
+                idx = selector.select(n_cand)
+            elif self.cfg.TRAINER.COOPAL.METHOD == "clustering_one_sample":
+                selector = ClusteringOneSample(self.cfg, i, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), n_cand, True, self.device)
+                idx = selector.select(n_cand)
+
             else:
                 print("NotImplementedError")
                 idx = U_index
             
-            if i != 0:
-                statistics = torch.zeros(self.num_classes)
-                for elem in dataset._train_x:
-                    statistics[elem.label] += 1
-                selector = PCB(self.cfg, self.model, unlabeled_dst, idx, dataset.get_num_classes(unlabeled_dst), statistics, self.device)
-                idx = selector.select(n_query)
-            
+            #if i != 0:
+            statistics = torch.zeros(self.num_classes)
+            for elem in dataset._train_x:
+                statistics[elem.label] += 1
+            if self.cfg.TRAIN.ONE_TIME_SAMPLING:
+                selector = PCB_ONE_TIME(self.cfg, self.model, unlabeled_dst, idx, dataset.get_num_classes(unlabeled_dst), statistics, self.device)
+            else:
+                selector = PCB_FILL(self.cfg, self.model, unlabeled_dst, idx, dataset.get_num_classes(unlabeled_dst), statistics, self.device)
+
+            idx = selector.select(n_query)
+        
             # Filtering 
             for k in idx:
                 dataset._train_x.append(unlabeled_dst[k])
                 U_index.remove(k)
             assert len(U_index) + len(dataset.train_x) == len(unlabeled_dst), f"u index: {len(U_index)}\t train set: {len(dataset.train_x)}\t unlabeled_dst: {len(unlabeled_dst)}"
-            
             self.train_loader_x = build_data_loader(
                 self.cfg,
                 sampler_type=self.cfg.DATALOADER.TRAIN_X.SAMPLER,
@@ -493,17 +532,57 @@ class ALVLM(TrainerX):
                 tfm=build_transform(self.cfg, is_train=True),
                 is_train=True,
                 dataset_wrapper=None
-            )   
+            )
             # self.model.train()
             self.before_train()
             for self.epoch in range(self.start_epoch, self.max_epoch):
                 self.before_epoch()
                 self.run_epoch()
-                self.after_epoch()
+                self.after_epoch(i)
             self.after_train()
             print("training time for {}-th round: {:.2f} seconds".format(i, time.time() - start))
         print("=== Result Overview ===")
         for i in range(len(self.acc)):
             print(f"{i}: {self.acc[i]}")
-        print("=======================")    
-            
+        print("=======================") 
+
+    @torch.no_grad()
+    def test_new(self, model_dir, epoch, split=None):
+
+        for i in range(self.cfg.TRAIN.MAX_ROUND):
+            self.build_model()
+            self.load_model(model_dir, epoch=epoch, round=i)
+
+            """A generic testing pipeline."""
+            self.set_model_mode("eval")
+            self.evaluator.reset()
+
+            if split is None:
+                split = self.cfg.TEST.SPLIT
+
+            if split == "val" and self.val_loader is not None:
+                data_loader = self.val_loader
+            else:
+                split = "test"  # in case val_loader is None
+                data_loader = self.test_loader
+
+            print(f"Evaluate on the *{split}* set")
+
+            for batch_idx, batch in enumerate(tqdm(data_loader)):
+                input, label = self.parse_batch_test(batch)
+                output = self.model(input)
+                self.evaluator.process(output, label)
+
+            results = self.evaluator.evaluate()
+
+            for k, v in results.items():
+                tag = f"{split}/{k}"
+                self.write_scalar(tag, v, self.epoch)
+            self.acc.append(list(results.values())[0])
+
+        print("=== Result Overview ===")
+        for i in range(len(self.acc)):
+            print(f"{i}: {self.acc[i]}")
+        print("=======================") 
+
+        return

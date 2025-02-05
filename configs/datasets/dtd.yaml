@@ -1,2 +1,3 @@
 DATASET:
   NAME: "DescribableTextures"
+  NUM_CLASS: 47

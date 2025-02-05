@@ -19,14 +19,34 @@ from dassl.data.data_manager import build_data_loader
 
 from clip import clip
 from clip.simple_tokenizer import SimpleTokenizer as _Tokenizer
-from .active_learning.pcb import PCB
+#from .active_learning.pcb import PCB
+from .active_learning.pcb_fill import PCB
 from .active_learning.badge import BADGE
 from .active_learning.coreset import Coreset
 from .active_learning.entropy import Entropy
 from .active_learning.clustering import Clustering
+from .alvlm import ALVLM
+import pdb
 
 _tokenizer = _Tokenizer()
 
+CUSTOM_TEMPLATES = {
+    "OxfordPets": "a photo of a {}, a type of pet.",
+    "OxfordFlowers": "a photo of a {}, a type of flower.",
+    "FGVCAircraft": "a photo of a {}, a type of aircraft.",
+    "DescribableTextures": "{} texture.",
+    "EuroSAT": "a centered satellite photo of {}.",
+    "StanfordCars": "a photo of a {}.",
+    "Food101": "a photo of {}, a type of food.",
+    "SUN397": "a photo of a {}.",
+    "Caltech101": "a photo of a {}.",
+    "UCF101": "a photo of a person doing {}.",
+    "ImageNet": "a photo of a {}.",
+    "ImageNetSketch": "a photo of a {}.",
+    "ImageNetV2": "a photo of a {}.",
+    "ImageNetA": "a photo of a {}.",
+    "ImageNetR": "a photo of a {}.",
+}
 
 
 def load_clip_to_cpu(cfg):
@@ -42,7 +62,11 @@ def load_clip_to_cpu(cfg):
     except RuntimeError:
         state_dict = torch.load(model_path, map_location="cpu")
 
-    model = clip.build_model(state_dict or model.state_dict())
+    design_details = {"trainer": 'CoCoOp',
+                      "vision_depth": 0,
+                      "language_depth": 0, "vision_ctx": 0,
+                      "language_ctx": 0}
+    model = clip.build_model(state_dict or model.state_dict(), design_details)
     
     return model
 
@@ -68,6 +92,32 @@ class TextEncoder(nn.Module):
         return x
 
 
+class TextEncoder_Orig(nn.Module):
+    def __init__(self, clip_model):
+        super().__init__()
+        self.transformer = clip_model.transformer
+        self.positional_embedding = clip_model.positional_embedding
+        self.ln_final = clip_model.ln_final
+        self.text_projection = clip_model.text_projection
+        self.token_embedding = clip_model.token_embedding
+        self.dtype = clip_model.dtype
+        
+
+    def forward(self, text):
+        x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
+
+        x = x + self.positional_embedding.type(self.dtype)
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = self.ln_final(x).type(self.dtype)
+
+        # x.shape = [batch_size, n_ctx, transformer.width]
+        # take features from the eot embedding (eot_token is the highest number in each sequence)
+        x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
+        return x
+
+
 class PromptLearner(nn.Module):
     def __init__(self, cfg, classnames, clip_model):
         super().__init__()
@@ -79,10 +129,18 @@ class PromptLearner(nn.Module):
         vis_dim = clip_model.visual.output_dim
         clip_imsize = clip_model.visual.input_resolution
         cfg_imsize = cfg.INPUT.SIZE[0]
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         assert cfg_imsize == clip_imsize, f"cfg_imsize ({cfg_imsize}) must equal to clip_imsize ({clip_imsize})"
 
         # if not ctx_init.endswith(".json"):
         prompt_prefix = " ".join(["X"] * n_ctx)
+        
+        # template
+        temp = CUSTOM_TEMPLATES[cfg.DATASET.NAME]
+        temp_prompts = [temp.format(c.replace("_", "")) for c in classnames]
+        temp_prompts = torch.cat([clip.tokenize(p) for p in temp_prompts])
+        self.temp_prompts = temp_prompts
+        self.temp_prompts.to(self.device)
         
         classnames = [name.replace("_", " ") for name in classnames]
         n_desc_per_cls = None
@@ -195,7 +253,6 @@ class PromptLearner(nn.Module):
         bias = self.meta_net(im_features)  # (batch, ctx_dim)
         bias = bias.unsqueeze(1)           # (batch, 1, ctx_dim)
         ctx = ctx.unsqueeze(0)             # (1, n_ctx, ctx_dim)
-        import pdb; pdb.set_trace()
         ctx_shifted = ctx + bias           # (batch, n_ctx, ctx_dim)
         
         # Use instance-conditioned context tokens for all classes
@@ -213,11 +270,12 @@ class PromptLearner(nn.Module):
 class CustomCLIP(nn.Module):
     def __init__(self, cfg, classnames, clip_model, desc_file=None):
         super().__init__()
-        
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.prompt_learner = PromptLearner(cfg, classnames, clip_model)
         self.tokenized_prompts = self.prompt_learner.tokenized_prompts
         self.image_encoder = clip_model.visual
         self.text_encoder = TextEncoder(clip_model)
+        self.text_encoder_orig = TextEncoder_Orig(clip_model)
         
         self.logit_scale = clip_model.logit_scale
         self.dtype = clip_model.dtype
@@ -233,9 +291,9 @@ class CustomCLIP(nn.Module):
             for name in classnames:
                 name = name.lower()
                 self.n_class_desc.append(len(desc_dict[name]))
-            
-        
-    def forward(self, image, label=None, get_feature=False):
+
+
+    def forward(self, image, label=None, get_feature=False, use_template=False):
 
         tokenized_prompts = self.tokenized_prompts
         logit_scale = self.logit_scale.exp()
@@ -255,39 +313,27 @@ class CustomCLIP(nn.Module):
             logits.append(l_i)
         logits = torch.stack(logits)
         text_features = torch.stack(text_features)
-                
-        # if self.cfg.TRAINER.COOPAL.AEPATH:
-        #     tmp = []
-        #     start = 0
-        #     for n in self.n_class_desc:
-        #         tmp.append(text_features[start:start+n].mean(dim=0))
-        #         start += n
-        #     text_features = torch.stack(tmp)
-
-
-        # if self.cfg.TRAINER.COOPAL.ASPATH:
-        #     tmp = [] 
-        #     start = 0
-        #     for n in self.n_class_desc:
-        #         tmp.append(torch.sum(logits[:, start:start+n], dim=1)/n)
-        #         start += n
-        #     logits = torch.stack(tmp, dim=1)
-
+        
         if get_feature:
             return logits, image_features
+        
+        elif use_template:
+            with torch.no_grad():
+                temp_prompts = self.prompt_learner.temp_prompts.to(self.device)
+                text_features = self.text_encoder_orig(temp_prompts)
+                text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+                logits = logit_scale * image_features @ text_features.t()
+                return logits
+
         elif self.prompt_learner.training:
             return F.cross_entropy(logits, label)
+        
         else:
             return logits
 
 
 @TRAINER_REGISTRY.register()
-class ALVLM_CoCoOp(TrainerX):
-    """Context Optimization (CoOp).
-
-    Learning to Prompt for Vision-Language Models
-    https://arxiv.org/abs/2109.01134
-    """
+class ALVLM_CoCoOp(ALVLM):
     def __init__(self, cfg):
         super().__init__(cfg)
         self.acc = []
@@ -301,7 +347,7 @@ class ALVLM_CoCoOp(TrainerX):
 
         print(f"Loading CLIP (backbone: {cfg.MODEL.BACKBONE.NAME})")
         clip_model = load_clip_to_cpu(cfg)
-        
+
         if cfg.TRAINER.COOP.PREC == "fp32" or cfg.TRAINER.COOP.PREC == "amp":
             # CLIP's default precision is fp16
             clip_model.float()
@@ -376,139 +422,3 @@ class ALVLM_CoCoOp(TrainerX):
             self.update_lr()
 
         return loss_summary
-
-    def parse_batch_train(self, batch):
-        input = batch["img"]
-        label = batch["label"]
-        input = input.to(self.device)
-        label = label.to(self.device)
-        return input, label
-
-    def load_model(self, directory, epoch=None):
-        if not directory:
-            print("Note that load_model() is skipped as no pretrained model is given")
-            return
-
-        names = self.get_model_names()
-
-        # By default, the best model is loaded
-        model_file = "model-best.pth.tar"
-
-        if epoch is not None:
-            model_file = "model.pth.tar-" + str(epoch)
-
-        for name in names:
-            model_path = osp.join(directory, name, model_file)
-
-            if not osp.exists(model_path):
-                raise FileNotFoundError('Model not found at "{}"'.format(model_path))
-
-            checkpoint = load_checkpoint(model_path)
-            state_dict = checkpoint["state_dict"]
-            epoch = checkpoint["epoch"]
-
-            # Ignore fixed token vectors
-            if "token_prefix" in state_dict:
-                del state_dict["token_prefix"]
-
-            if "token_suffix" in state_dict:
-                del state_dict["token_suffix"]
-
-            print("Loading weights to {} " 'from "{}" (epoch = {})'.format(name, model_path, epoch))
-            # set strict=False
-            self._models[name].load_state_dict(state_dict, strict=False)
-    
-    def before_train(self):
-        print("INITIALIZE the prompts weights")
-        self.build_model()
-        
-    def after_train(self):
-        print("Finish training")
-        do_test = not self.cfg.TEST.NO_TEST
-        if do_test:
-            if self.cfg.TEST.FINAL_MODEL == "best_val":
-                print("Deploy the model with the best val performance")
-                self.load_model(self.output_dir)
-            else:
-                print("Deploy the last-epoch model")
-            self.acc.append(self.test())
-            
-        # Close writer
-        self.close_writer()
-        
-    def train(self):
-        """Generic training loops."""
-        dataset = build_dataset(self.cfg)
-        
-        print(f"dataset length: {len(dataset.train_x)}")
-        unlabeled_dst = dataset.train_x 
-        U_index = list(range(len(unlabeled_dst)))
-        if self.cfg.TRAINER.COOP.CSC:
-            n_query = dataset.get_num_classes(unlabeled_dst)
-        else:
-            n_query = dataset.get_num_classes(unlabeled_dst)
-        n_cand = int(len(unlabeled_dst) * self.cfg.TRAINER.COOPAL.GAMMA) # 10% of entire dataset
-
-        dataset._train_x = []
-        for i in range(1): # クラス数分のデータをサンプルし如何にバランスよくサンプルできるか
-            start = time.time()
-
-            if i == 0:
-                self.build_model()
-
-            #if self.cfg.TRAINER.COOPAL.METHOD == "random" or i ==0:
-            if self.cfg.TRAINER.COOPAL.METHOD == "random":
-                idx = sample(U_index, n_query)
-            elif self.cfg.TRAINER.COOPAL.METHOD == "entropy":
-                selector = Entropy(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), self.device)
-                idx = selector.select(n_cand)
-            elif self.cfg.TRAINER.COOPAL.METHOD == "badge":
-                selector = BADGE(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), self.device)
-                idx = selector.select(n_cand)
-            elif self.cfg.TRAINER.COOPAL.METHOD == "coreset":
-                val_x = dataset._train_x.copy()
-                selector = Coreset(self.cfg, self.model, unlabeled_dst, U_index, val_x, dataset.get_num_classes(unlabeled_dst))
-                idx = selector.select(n_cand)
-            elif self.cfg.TRAINER.COOPAL.METHOD == "clustering":
-                selector = Clustering(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), n_cand, self.device)
-                idx = selector.select(n_cand)
-            
-            else:
-                print("NotImplementedError")
-                idx = U_index
-            
-            #if i != 0:
-            statistics = torch.zeros(self.num_classes)
-            for elem in dataset._train_x:
-                statistics[elem.label] += 1
-            selector = PCB(self.cfg, self.model, unlabeled_dst, idx, dataset.get_num_classes(unlabeled_dst), statistics, self.device)
-            idx = selector.select(n_query)
-        
-            # Filtering 
-            for k in idx:
-                dataset._train_x.append(unlabeled_dst[k])
-                U_index.remove(k)
-            assert len(U_index) + len(dataset.train_x) == len(unlabeled_dst), f"u index: {len(U_index)}\t train set: {len(dataset.train_x)}\t unlabeled_dst: {len(unlabeled_dst)}"
-            self.train_loader_x = build_data_loader(
-                self.cfg,
-                sampler_type=self.cfg.DATALOADER.TRAIN_X.SAMPLER,
-                data_source=dataset.train_x,
-                batch_size=self.cfg.DATALOADER.TRAIN_X.BATCH_SIZE,
-                n_domain=self.cfg.DATALOADER.TRAIN_X.N_DOMAIN,
-                n_ins=self.cfg.DATALOADER.TRAIN_X.N_INS,
-                tfm=build_transform(self.cfg, is_train=True),
-                is_train=True,
-                dataset_wrapper=None
-            )   
-            # self.model.train()
-            self.before_train()
-            for self.epoch in range(self.start_epoch, self.max_epoch):
-                self.before_epoch()
-                self.run_epoch()
-                self.after_epoch()
-            self.after_train()
-            print("training time for {}-th round: {:.2f} seconds".format(i, time.time() - start))
-        print("=== Result Overview ===")
-        for i in range(len(self.acc)):
-            print(f"{i}: {self.acc[i]}")
-        print("=======================")    

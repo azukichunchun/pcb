@@ -2,6 +2,7 @@ import torch
 from dassl.data.transforms.transforms import build_transform
 from dassl.data.data_manager import build_data_loader
 import random
+import copy
 
 from .AL import AL
 
@@ -41,7 +42,7 @@ class PCB(AL):
         self.pred = torch.cat(self.pred)
         
         Q_index = []
-        
+        true_class_counts = copy.deepcopy(self.statistics)
         while len(Q_index) < n_query:
             min_cls = int(torch.argmin(self.statistics))
             sub_pred = (self.pred == min_cls).nonzero().squeeze(dim=1).tolist()
@@ -52,9 +53,9 @@ class PCB(AL):
                 Q_index.append(num)
             else:
                 random.shuffle(sub_pred)
-                for idx in sub_pred:
-                    if idx not in Q_index:
-                        Q_index.append(idx)
+                for num in sub_pred:
+                    if num not in Q_index:
+                        Q_index.append(num)
                         self.statistics[min_cls] += 1
                         break 
                 else: 
@@ -62,7 +63,8 @@ class PCB(AL):
                     while num in Q_index:
                         num = random.randint(0, num_unlabeled-1)
                     Q_index.append(num)
-            
+            true_class_counts[self.unlabeled_set[num].label] += 1
+            print(true_class_counts)
         Q_index = [self.U_index[idx] for idx in Q_index]
         
         return Q_index

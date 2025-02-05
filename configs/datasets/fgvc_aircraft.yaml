@@ -1,2 +1,3 @@
 DATASET:
   NAME: "FGVCAircraft"
+  NUM_CLASS: 100

@@ -17,10 +17,10 @@ import datasets.sun397
 import datasets.caltech101
 import datasets.ucf101
 
-
-
 import trainers.alvlm
 import trainers.alvlm_cocoop
+import trainers.alvlm_dococoop
+import trainers.alvlm_maple
 import trainers.cocoop
 
 def print_args(args, cfg):
@@ -82,6 +82,12 @@ def extend_cfg(cfg):
     """
     from yacs.config import CfgNode as CN
 
+    cfg.TRAIN = cfg.TRAIN.clone()
+    cfg.TRAIN.PROX_START_EPOCH = 12
+    cfg.TRAIN.ONE_TIME_SAMPLING = False
+    cfg.TRAIN.CURRICULUM = False
+    cfg.TRAIN.MAX_ROUND = 8
+
     cfg.TRAINER.COOP = CN()
     cfg.TRAINER.COOP.N_CTX = 16  # number of context vectors
     cfg.TRAINER.COOP.CSC = False  # class-specific context
@@ -109,12 +115,27 @@ def extend_cfg(cfg):
     cfg.TRAINER.COCOOPAL.GAMMA = 0.1
     cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
 
+    cfg.TRAINER.DOCOCOOPAL = CN() 
+    cfg.TRAINER.DOCOCOOPAL.METHOD = ""
+    cfg.TRAINER.DOCOCOOPAL.ASPATH = ""
+    cfg.TRAINER.DOCOCOOPAL.AEPATH = ""
+    cfg.TRAINER.DOCOCOOPAL.GAMMA = 0.1
+    cfg.TRAINER.DOCOCOOPAL.LAMBDA_CONPROX = 0.1
+    cfg.TRAINER.DOCOCOOPAL.LAMBDA_PROX = 0.1
+    cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
+
     cfg.TRAINER.MAPLE = CN()
     cfg.TRAINER.MAPLE.N_CTX = 2  # number of context vectors
     cfg.TRAINER.MAPLE.CTX_INIT = "a photo of a"  # initialization words
     cfg.TRAINER.MAPLE.PREC = "fp16"  # fp16, fp32, amp
     cfg.TRAINER.MAPLE.PROMPT_DEPTH = 9 # Max 12, minimum 0, for 1 it will act as shallow MaPLe (J=1)
+
     cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
+    cfg.DATASET.NUM_CLASS = 10
+
+    cfg.OPTIM_CONPROX = cfg.OPTIM.clone()
+    cfg.OPTIM_PROX = cfg.OPTIM.clone()
+
 
 def setup_cfg(args):
     cfg = get_cfg_default()
@@ -156,8 +177,9 @@ def main(args):
     trainer = build_trainer(cfg)
 
     if args.eval_only:
-        trainer.load_model(args.model_dir, epoch=args.load_epoch)
-        trainer.test()
+        # trainer.build_model()
+        # trainer.load_model(args.model_dir, epoch=args.load_epoch)
+        trainer.test_new(model_dir=args.model_dir, epoch=args.load_epoch)
         return
 
     if not args.no_train:
