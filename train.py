@@ -21,6 +21,7 @@ import trainers.alvlm
 import trainers.alvlm_cocoop
 import trainers.alvlm_dococoop
 import trainers.alvlm_maple
+import trainers.alvlm_promptsrc
 import trainers.cocoop
 
 def print_args(args, cfg):
@@ -87,6 +88,7 @@ def extend_cfg(cfg):
     cfg.TRAIN.ONE_TIME_SAMPLING = False
     cfg.TRAIN.CURRICULUM = False
     cfg.TRAIN.MAX_ROUND = 8
+    cfg.TRAIN.STOP_ROUND = 8
 
     cfg.TRAINER.COOP = CN()
     cfg.TRAINER.COOP.N_CTX = 16  # number of context vectors
@@ -130,6 +132,19 @@ def extend_cfg(cfg):
     cfg.TRAINER.MAPLE.PREC = "fp16"  # fp16, fp32, amp
     cfg.TRAINER.MAPLE.PROMPT_DEPTH = 9 # Max 12, minimum 0, for 1 it will act as shallow MaPLe (J=1)
 
+    # Config for PromptSRC
+    cfg.TRAINER.PROMPTSRC = CN()
+    cfg.TRAINER.PROMPTSRC.N_CTX_VISION = 4  # number of context vectors at the vision branch
+    cfg.TRAINER.PROMPTSRC.N_CTX_TEXT = 4  # number of context vectors at the language branch
+    cfg.TRAINER.PROMPTSRC.CTX_INIT = "a photo of a"  # initialization words
+    cfg.TRAINER.PROMPTSRC.PREC = "fp16"  # fp16, fp32, amp
+    cfg.TRAINER.PROMPTSRC.PROMPT_DEPTH_VISION = 9  # Max 12, minimum 0, for 0 it will be using shallow IVLP prompting (J=1)
+    cfg.TRAINER.PROMPTSRC.PROMPT_DEPTH_TEXT = 9  # Max 12, minimum 0, for 0 it will be using shallow IVLP prompting (J=1)
+    cfg.TRAINER.PROMPTSRC.TEXT_LOSS_WEIGHT = 25
+    cfg.TRAINER.PROMPTSRC.IMAGE_LOSS_WEIGHT = 10
+    cfg.TRAINER.PROMPTSRC.GPA_MEAN = 15
+    cfg.TRAINER.PROMPTSRC.GPA_STD = 1
+    
     cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
     cfg.DATASET.NUM_CLASS = 10
 

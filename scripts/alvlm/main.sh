@@ -12,7 +12,7 @@ DATA=/go/to/data # YOU NEED TO FIX IT
 DATA=/data2/yhiro/data
 DATA=/home/yhiro/CoOp_/data
 
-TRAINER=ALVLM_MaPLe
+TRAINER=ALVLM_PromptSRC
 CTP="end"  # class token position (end or middle)
 NCTX=4  # number of context tokens
 SHOTS=-1  # number of shots (1, 2, 4, 8, 16)

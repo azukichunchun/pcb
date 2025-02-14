@@ -15,6 +15,7 @@ class Coreset(AL):
         
     def get_features(self):
         self.model.eval()
+        import pdb; pdb.set_trace()
         labeled_features, unlabeled_features = None, None
         with torch.no_grad():
             labeled_in_loader = build_data_loader(
@@ -60,7 +61,6 @@ class Coreset(AL):
 
     def k_center_greedy(self, labeled, unlabeled, n_query):
         # get the minimum distances between the labeled and unlabeled examples (iteratively, to avoid memory issues):
-        import pdb; pdb.set_trace()
         min_dist = torch.min(torch.cdist(labeled[0:2, :], unlabeled), 0).values
         for j in range(2, labeled.shape[0], 100):
             if j + 100 < labeled.shape[0]:

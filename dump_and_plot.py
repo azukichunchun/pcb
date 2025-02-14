@@ -12,70 +12,93 @@ args = sys.argv
 # ディレクトリ構造の基本パス
 shots = ["shots_-1"]
 seeds = ["seed1", "seed2","seed3"]
-trainers = ["ALVLM_CoCoOp_clustering_one_sample"]
-datasets = ["eurosat", "dtd", "caltech101",
-            "oxford_pets", "oxford_flowers", "fgvc_aircraft", "stanford_cars"]
+#trainers = ["ALVLM_MaPLe_random","ALVLM_MaPLe_entropy", "ALVLM_MaPLe_badge", "ALVLM_MaPLe_entropy_curriculum", "ALVLM_MaPLe_badge_curriculum"]
+trainers = ["ALVLM_CoCoOp_random","ALVLM_CoCoOp_entropy", "ALVLM_CoCoOp_badge", "ALVLM_CoCoOp_entropy_curriculum", "ALVLM_CoCoOp_badge_curriculum"]
+#trainers = ["ALVLM_random","ALVLM_entropy","ALVLM_badge"]
+#trainers = ["ALVLM_PromptSRC_random","ALVLM_PromptSRC_entropy","ALVLM_PromptSRC_badge", "ALVLM_PromptSRC_entropy_curriculum", "ALVLM_PromptSRC_badge_curriculum"]
+datasets = ["oxford_flowers", "dtd", "oxford_pets", "eurosat", "caltech101", "stanford_cars", "fgvc_aircraft",]
+#datasets = ["eurosat"]
 
-cfg = "vit_b16_one_time_one_sample"
+
+begin_signal = "=== Result Overview ==="
+end_signal = "======================="
+
 
 # accuracyを抽出する関数
 def extract_accuracy_from_log(file_path):
+    good_to_go = False
+    stop_to_go = False
+    output = dict()
     with open(file_path, 'r') as f:
-        content = f.read()
-        # 正規表現を使用してaccuracyを抽出
-        match = re.search(r'accuracy: (\d+\.\d+)%', content)
-        if match:
-            return float(match.group(1))
-    return None
+        lines = f.readlines()
+        for line in lines:
+            line = line.strip()
+            if line == begin_signal:
+                good_to_go = True
+            if line == end_signal:
+                stop_to_go = True
+            
+            match = re.compile(r"(\d+): ([\.\deE+-]+)").search(line) # 1: 0.1234
+            if match and good_to_go:
+                round = int(match.group(1))
+                accuracy = float(match.group(2))
+                output[round] = accuracy
+            
+            if stop_to_go:
+                break
+
+    return output
+    
 
 # main関数
 def main():
-    summary = dict()
-    differences = {}
-    for dataset in datasets:
-        print(f"###{dataset}###")
-        base_paths = [
-            f"output/base2new/train_base/{dataset}/",
-            f"output/base2new/test_new/{dataset}/"
-            ]
+    for trainer in trainers:
+        print(f"##{trainer}##")
+        res = []
+        agg_ave = []
+        for dataset in datasets:
+            #print(f"###{dataset}###")
+            base_paths = {
+                "train_base": f"output/base2new/train_base/{dataset}/",
+                "test_new": f"output/base2new/test_new/{dataset}/"
+            }
         
-        fullres = dict()    
-        dump = []
-
-        for trainer in trainers:
-            res = defaultdict(list)
-            print(f"##{trainer}##")
-            
-            for base_path in base_paths:
+            accuracies = defaultdict(lambda: defaultdict(list))
+            for style, base_path in base_paths.items():
                 for shot in shots:
-                    accuracies = []
                     for seed in seeds:
-                        log_path = os.path.join(base_path, shot, trainer, cfg, seed, "log.txt")
+                        if "curriculum" in trainer:
+                            cfg = "vit_b16_one_time_miru2025_curriculum_phase_1"
+                            trainer_for_path  = trainer.replace("_curriculum", "")
+                        else:
+                            cfg = "vit_b16_one_time_miru2025"
+                            trainer_for_path = trainer
+                        log_path = os.path.join(base_path, shot, trainer_for_path , cfg, seed, "log.txt")
                         if os.path.exists(log_path):
-                            accuracy = extract_accuracy_from_log(log_path)
-                            if accuracy is not None:
-                                #print(f"{log_path} -> accuracy: {accuracy}%")
-                                accuracies.append(accuracy)
-                            else:
-                                print(f"Could not find accuracy in {log_path}")
+                            output = extract_accuracy_from_log(log_path)
+                            if output is not None:
+                                for rnd, acc in output.items():
+                                    accuracies[rnd][style].append(acc)
+                        else:
+                            print(f"Could not find accuracy in {log_path}")
 
-                    acc_mean = np.round(np.mean(accuracies),2)
-                    acc_std = np.round(np.std(accuracies), 2)
-                    
-                    print(f"{base_path.split('/')[2]},{dataset},{trainer},{cfg},{shot}: -> ${acc_mean}_{{{acc_std}}}$")    
-                    res[base_path.split('/')[2]+"_means"].append(acc_mean)
-                    res[base_path.split('/')[2]+"_errors"].append(acc_std)
-            
-            harmonic_means_elementwise = [hmean([res['test_new_means'][i], res['train_base_means'][i]]) for i in range(len(res['test_new_means']))]
-            for i, v in enumerate(harmonic_means_elementwise):
-                print(f"{trainer}, {shots[i]}: {round(v, 2)}")
-            
-            res["H"] = harmonic_means_elementwise
+            # calculate harmonic means
+            for rnd, accs in accuracies.items():
+                for acc_base, acc_new in zip(accs["train_base"], accs["test_new"]):
+                    hmean_val = hmean([acc_base, acc_new])
+                    accuracies[rnd]["harmonic_mean"].append(hmean_val)
 
-            fullres[trainer] = res
-                
-        summary[dataset] = fullres
-    
+            # print results
+            for rnd, accs in accuracies.items():
+                for style, vals in accs.items():
+                    avg = np.mean(vals)
+                    std = np.std(vals)
+                    if style == "harmonic_mean" and rnd == 2:
+                        agg_ave.append(avg)
+                        #print(f"{rnd} : {avg:.2f} +- {std:.2f}")
+                        backslash="\\"
+                        res.append((f"{avg:.2f}{backslash}small{{${backslash}pm${std:.2f}}}"))
+        print(" & ".join(res) + f" & {np.mean(agg_ave):.2f}")
 
 # スクリプトを実行
 main()

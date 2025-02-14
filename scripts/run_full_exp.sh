@@ -3,8 +3,7 @@ TRAINER=$2
 DATASET=$3
 ALMETHOD=$4
 CFG=$5
-
-LOADEP=10
+LOADEP=$6
 
 echo CUDA_VISIBLE_DEVICES=${CUDA} bash scripts/alvlm/run_exp.sh ${TRAINER} ${DATASET} ${ALMETHOD} none ${CFG} ${LOADEP} 1 &&
 echo CUDA_VISIBLE_DEVICES=${CUDA} bash scripts/alvlm/run_exp.sh ${TRAINER} ${DATASET} ${ALMETHOD} none ${CFG} ${LOADEP} 2 &&

@@ -415,6 +415,13 @@ class ALVLM(TrainerX):
             if "token_suffix" in state_dict:
                 del state_dict["token_suffix"]
 
+            if "prompt_learner.token_prefix" in state_dict:
+                del state_dict["prompt_learner.token_prefix"]
+
+            if "prompt_learner.token_suffix" in state_dict:
+                del state_dict["prompt_learner.token_suffix"]
+
+
             print("Loading weights to {} " 'from "{}" (epoch = {})'.format(name, model_path, epoch))
             # set strict=False
             self._models[name].load_state_dict(state_dict, strict=False)
@@ -478,33 +485,28 @@ class ALVLM(TrainerX):
             if i == 0:
                 self.build_model()
 
-            #if self.cfg.TRAINER.COOPAL.METHOD == "random" or i ==0:
-            if self.cfg.TRAINER.COOPAL.METHOD == "random":
-                # idx = sample(U_index, n_query)
-                idx = sample(U_index, n_cand)
-            elif self.cfg.TRAINER.COOPAL.METHOD == "entropy":
-                selector = Entropy(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), self.device)
-                idx = selector.select(n_cand)
-            elif self.cfg.TRAINER.COOPAL.METHOD == "badge":
-                selector = BADGE(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), self.device)
-                idx = selector.select(n_cand)
-            elif self.cfg.TRAINER.COOPAL.METHOD == "coreset":
-                val_x = dataset._train_x.copy()
-                selector = Coreset(self.cfg, self.model, unlabeled_dst, U_index, val_x, dataset.get_num_classes(unlabeled_dst))
-                idx = selector.select(n_cand)
-            elif self.cfg.TRAINER.COOPAL.METHOD == "clustering":
-                selector = Clustering(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), n_cand, False, self.device)
-                idx = selector.select(n_cand)
-            elif self.cfg.TRAINER.COOPAL.METHOD == "clustering_ent":
-                selector = Clustering(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), n_cand, True, self.device)
-                idx = selector.select(n_cand)
-            elif self.cfg.TRAINER.COOPAL.METHOD == "clustering_one_sample":
+            if self.cfg.TRAIN.CURRICULUM and i < self.cfg.TRAIN.STOP_ROUND:
+                print(f"{i}-round: Clustering on sample")
                 selector = ClusteringOneSample(self.cfg, i, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), n_cand, True, self.device)
                 idx = selector.select(n_cand)
-
             else:
-                print("NotImplementedError")
-                idx = U_index
+                print(f"{i}-round: {self.cfg.TRAINER.COOPAL.METHOD} sampling")
+                if self.cfg.TRAINER.COOPAL.METHOD == "random":
+                    # idx = sample(U_index, n_query)
+                    idx = sample(U_index, n_cand)
+                elif self.cfg.TRAINER.COOPAL.METHOD == "entropy":
+                    selector = Entropy(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), self.device)
+                    idx = selector.select(n_cand)
+                elif self.cfg.TRAINER.COOPAL.METHOD == "badge":
+                    selector = BADGE(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), self.device)
+                    idx = selector.select(n_cand)
+                elif self.cfg.TRAINER.COOPAL.METHOD == "coreset":
+                    val_x = dataset._train_x.copy()
+                    selector = Coreset(self.cfg, self.model, unlabeled_dst, U_index, val_x, dataset.get_num_classes(unlabeled_dst))
+                    idx = selector.select(n_cand)
+                else:
+                    print("NotImplementedError")
+                    idx = U_index
             
             #if i != 0:
             statistics = torch.zeros(self.num_classes)
