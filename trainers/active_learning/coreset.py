@@ -15,7 +15,6 @@ class Coreset(AL):
         
     def get_features(self):
         self.model.eval()
-        import pdb; pdb.set_trace()
         labeled_features, unlabeled_features = None, None
         with torch.no_grad():
             labeled_in_loader = build_data_loader(

@@ -12,7 +12,7 @@ DATA=/go/to/data # YOU NEED TO FIX IT
 DATA=/data2/yhiro/data
 DATA=/home/yhiro/CoOp_/data
 
-TRAINER=ALVLM_PromptSRC
+TRAINER=ALVLM_CoCoOp
 CTP="end"  # class token position (end or middle)
 NCTX=4  # number of context tokens
 SHOTS=-1  # number of shots (1, 2, 4, 8, 16)
@@ -64,7 +64,7 @@ elif [ "$MODE" = "none" ]; then
         TRAINER.COOP.CLASS_TOKEN_POSITION ${CTP} \
         DATASET.NUM_SHOTS ${SHOTS} \
         TRAINER.COOPAL.METHOD ${ALMETHOD} \
-        DATASET.SUBSAMPLE_CLASSES base
+        DATASET.SUBSAMPLE_CLASSES all
 
 else 
     echo "MODE should be selected in [none, AS, AE]"

@@ -8,7 +8,7 @@ import copy
 from .AL import AL
 
 
-class PCB(AL):
+class PCBSilhouette(AL):
     def __init__(self, cfg, i, model, unlabeled_dst, U_index, n_class, statistics, device, **kwargs):
         super().__init__(cfg, model, unlabeled_dst, U_index, n_class, **kwargs)
         self.device = device 
@@ -33,55 +33,56 @@ class PCB(AL):
                 tfm=build_transform(self.cfg, is_train=False),
                 is_train=False,
             )
-            
+
             # generate entire unlabeled features set
-            img_features = []
-            img_paths = []
-            img_labels = []
             for i, batch in enumerate(unlabeled_loader):
                 inputs = batch["img"].to(self.device)
-                out, features = self.model(inputs, get_feature=True)
+                out = self.model(inputs, get_feature=False)
                 batchProbs = torch.nn.functional.softmax(out, dim=1).data
                 maxInds = torch.argmax(batchProbs, 1)
-                # _, preds = torch.max(out.data, 1)
                 self.pred.append(maxInds.detach().cpu())
-                img_features.append(features)
-                img_paths.append(batch["impath"])
-                img_labels.append(batch["label"])
         self.pred = torch.cat(self.pred)
         
-        if self.round == 0:
-            with open(f"{self.cfg.OUTPUT_DIR}/img_features_dtd.pkl", "wb") as f:
-                pickle.dump(img_features, f)
-            with open(f"{self.cfg.OUTPUT_DIR}/img_paths_dtd.pkl", "wb") as f:
-                pickle.dump(img_paths, f)
-            with open(f"{self.cfg.OUTPUT_DIR}/img_labels_dtd.pkl", "wb") as f:
-                pickle.dump(img_labels, f)
-
+        # クラスタ中心で選んだものはpredに関係なくQ_indexに加える
         Q_index = []
         true_class_counts = copy.deepcopy(self.statistics)
+        Q_index.extend(self.cluster_centers)
+        
+        assert max(self.cluster_centers) <= len(self.unlabeled_set), f"{max(self.cluster_centers)} > {len(self.unlabeled_set)}"
+
+        # クラスタ中心の真のラベルをもとにself.statisticsを更新
+        for idx in self.cluster_centers:
+            if len(self.unlabeled_set) < idx:
+                print(idx)
+            self.statistics[self.unlabeled_set[idx].label] += 1
+            true_class_counts[self.unlabeled_set[idx].label] += 1
+        
+        # その後はpredに従い、まだ選ばれていないクラスのものをQ_indexに加える
         while len(Q_index) < n_query:
             min_cls = int(torch.argmin(self.statistics))
             sub_pred = (self.pred == min_cls).nonzero().squeeze(dim=1).tolist()
             if len(sub_pred) == 0:
                 num = random.randint(0, num_unlabeled-1)
                 while num in Q_index:
-                    num = random.randint(0, num_unlabeled-1)
+                    if num not in self.cluster_centers:
+                        num = random.randint(0, num_unlabeled-1)
                 Q_index.append(num)
             else:
                 random.shuffle(sub_pred)
                 for num in sub_pred:
-                    if num not in Q_index:
-                        Q_index.append(num)
-                        self.statistics[min_cls] += 1
-                        break 
+                    if num not in self.cluster_centers: # クラスタ中心は選ばない
+                        if num not in Q_index: # すでに選ばれるものは選ばない
+                            Q_index.append(num)
+                            self.statistics[min_cls] += 1
+                            break 
                 else: 
                     num = random.randint(0, num_unlabeled-1)
                     while num in Q_index:
-                        num = random.randint(0, num_unlabeled-1)
+                        if num not in self.cluster_centers:
+                            num = random.randint(0, num_unlabeled-1)
                     Q_index.append(num)
             true_class_counts[self.unlabeled_set[num].label] += 1
             print(true_class_counts)
+
         Q_index = [self.U_index[idx] for idx in Q_index]
-        
         return Q_index

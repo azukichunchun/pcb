@@ -21,11 +21,13 @@ from clip import clip
 from clip.simple_tokenizer import SimpleTokenizer as _Tokenizer
 from .active_learning.pcb import PCB as PCB_ONE_TIME
 from .active_learning.pcb_fill import PCB as PCB_FILL
+from .active_learning.pcb_silhouette import PCBSilhouette
 from .active_learning.badge import BADGE
 from .active_learning.coreset import Coreset
 from .active_learning.entropy import Entropy
 from .active_learning.clustering import Clustering
 from .active_learning.clustering_one_sample import ClusteringOneSample
+from .active_learning.clustering_with_silhouette import ClusteringSilhouette
 
 _tokenizer = _Tokenizer()
 
@@ -478,7 +480,10 @@ class ALVLM(TrainerX):
         else:
             n_query = dataset.get_num_classes(unlabeled_dst)
         n_cand = int(len(unlabeled_dst) * self.cfg.TRAINER.COOPAL.GAMMA) # 10% of entire dataset
+        #n_cand = int(len(unlabeled_dst) * 1.0) # entire dataset
         dataset._train_x = []
+
+        query_impath = []
         for i in range(self.cfg.TRAIN.MAX_ROUND): # クラス数分のデータをサンプルし如何にバランスよくサンプルできるか
             start = time.time()
 
@@ -486,7 +491,7 @@ class ALVLM(TrainerX):
                 self.build_model()
 
             if self.cfg.TRAIN.CURRICULUM and i < self.cfg.TRAIN.STOP_ROUND:
-                print(f"{i}-round: Clustering on sample")
+                print(f"{i}-round: Clustering one sample")
                 selector = ClusteringOneSample(self.cfg, i, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), n_cand, True, self.device)
                 idx = selector.select(n_cand)
             else:
@@ -501,8 +506,14 @@ class ALVLM(TrainerX):
                     selector = BADGE(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), self.device)
                     idx = selector.select(n_cand)
                 elif self.cfg.TRAINER.COOPAL.METHOD == "coreset":
-                    val_x = dataset._train_x.copy()
-                    selector = Coreset(self.cfg, self.model, unlabeled_dst, U_index, val_x, dataset.get_num_classes(unlabeled_dst))
+                    if i == 0:
+                        idx = sample(U_index, n_cand)
+                    else:
+                        val_x = dataset._train_x.copy()
+                        selector = Coreset(self.cfg, self.model, unlabeled_dst, U_index, val_x, dataset.get_num_classes(unlabeled_dst))
+                        idx = selector.select(n_cand)
+                elif self.cfg.TRAINER.COOPAL.METHOD == "clustering_with_silhouette":
+                    selector = ClusteringSilhouette(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), n_cand, self.device)
                     idx = selector.select(n_cand)
                 else:
                     print("NotImplementedError")
@@ -512,8 +523,10 @@ class ALVLM(TrainerX):
             statistics = torch.zeros(self.num_classes)
             for elem in dataset._train_x:
                 statistics[elem.label] += 1
-            if self.cfg.TRAIN.ONE_TIME_SAMPLING:
-                selector = PCB_ONE_TIME(self.cfg, self.model, unlabeled_dst, idx, dataset.get_num_classes(unlabeled_dst), statistics, self.device)
+            if self.cfg.TRAINER.COOPAL.METHOD == "clustering_with_silhouette":
+                selector = PCBSilhouette(self.cfg, i, self.model, unlabeled_dst, idx, dataset.get_num_classes(unlabeled_dst), statistics, self.device)
+            elif self.cfg.TRAIN.ONE_TIME_SAMPLING:
+                selector = PCB_ONE_TIME(self.cfg, i, self.model, unlabeled_dst, idx, dataset.get_num_classes(unlabeled_dst), statistics, self.device)
             else:
                 selector = PCB_FILL(self.cfg, self.model, unlabeled_dst, idx, dataset.get_num_classes(unlabeled_dst), statistics, self.device)
 
@@ -522,6 +535,7 @@ class ALVLM(TrainerX):
             # Filtering 
             for k in idx:
                 dataset._train_x.append(unlabeled_dst[k])
+                query_impath.append(unlabeled_dst[k].impath)
                 U_index.remove(k)
             assert len(U_index) + len(dataset.train_x) == len(unlabeled_dst), f"u index: {len(U_index)}\t train set: {len(dataset.train_x)}\t unlabeled_dst: {len(unlabeled_dst)}"
             self.train_loader_x = build_data_loader(
@@ -547,6 +561,10 @@ class ALVLM(TrainerX):
         for i in range(len(self.acc)):
             print(f"{i}: {self.acc[i]}")
         print("=======================") 
+
+        with open(f"{self.cfg.OUTPUT_DIR}/query_impath.txt", "w") as f:
+            for impath in query_impath:
+                f.write(impath + "\n")
 
     @torch.no_grad()
     def test_new(self, model_dir, epoch, split=None):

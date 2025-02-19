@@ -12,13 +12,13 @@ args = sys.argv
 # ディレクトリ構造の基本パス
 shots = ["shots_-1"]
 seeds = ["seed1", "seed2","seed3"]
-#trainers = ["ALVLM_MaPLe_random","ALVLM_MaPLe_entropy", "ALVLM_MaPLe_badge", "ALVLM_MaPLe_entropy_curriculum", "ALVLM_MaPLe_badge_curriculum"]
-trainers = ["ALVLM_CoCoOp_random","ALVLM_CoCoOp_entropy", "ALVLM_CoCoOp_badge", "ALVLM_CoCoOp_entropy_curriculum", "ALVLM_CoCoOp_badge_curriculum"]
-#trainers = ["ALVLM_random","ALVLM_entropy","ALVLM_badge"]
-#trainers = ["ALVLM_PromptSRC_random","ALVLM_PromptSRC_entropy","ALVLM_PromptSRC_badge", "ALVLM_PromptSRC_entropy_curriculum", "ALVLM_PromptSRC_badge_curriculum"]
+
 datasets = ["oxford_flowers", "dtd", "oxford_pets", "eurosat", "caltech101", "stanford_cars", "fgvc_aircraft",]
 #datasets = ["eurosat"]
-
+trainers = ["ALVLM_PromptSRC_random","ALVLM_PromptSRC_entropy", "ALVLM_PromptSRC_badge", "ALVLM_PromptSRC_badge_curriculum"]
+trainers = ["ALVLM_MaPLe_random","ALVLM_MaPLe_entropy", "ALVLM_MaPLe_badge", "ALVLM_MaPLe_coreset", "ALVLM_MaPLe_random_curriculum"]
+trainers = ["ALVLM_CoCoOp_random","ALVLM_CoCoOp_entropy", "ALVLM_CoCoOp_badge", "ALVLM_CoCoOp_coreset"]
+#trainers = ["ALVLM_random","ALVLM_entropy", "ALVLM_badge", "ALVLM_coreset"]
 
 begin_signal = "=== Result Overview ==="
 end_signal = "======================="
@@ -93,7 +93,8 @@ def main():
                 for style, vals in accs.items():
                     avg = np.mean(vals)
                     std = np.std(vals)
-                    if style == "harmonic_mean" and rnd == 2:
+                    if style == "harmonic_mean" and rnd == 7:
+                    #if style == "harmonic_mean":
                         agg_ave.append(avg)
                         #print(f"{rnd} : {avg:.2f} +- {std:.2f}")
                         backslash="\\"
