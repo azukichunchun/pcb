@@ -14,10 +14,11 @@ import os
 import pickle
 
 class ClusteringSilhouette(AL):
-    def __init__(self, cfg, model, unlabeled_dst, U_index, n_class, n_cand, device, **kwargs):
+    def __init__(self, cfg, i, model, unlabeled_dst, U_index, n_class, n_cand, device, **kwargs):
         super().__init__(cfg, model, unlabeled_dst, U_index, n_class, **kwargs)
         self.device= device 
         self.n_cand = n_cand
+        self.round = i
         self.silhouette_threshold = 0.05
         
     def run(self, n_query):
@@ -57,16 +58,21 @@ class ClusteringSilhouette(AL):
 
         # 重心から近い順にサンプリング
         distances = pairwise_distances(kmeans.cluster_centers_, img_features) # size: (n_class, n_sample)
-
         sample_idx = []
         for cluster_id, d in enumerate(distances):
             # d: (1, n_sample)
             if cluster_silhouette_scores[cluster_id] < self.silhouette_threshold: # silhouette scoreが閾値以下のクラスタはランダムサンプル
                 continue
             else:
-                d_minid = np.argsort(d)
-                d_minid = d_minid[0] # 最も近いサンプルのみ選択
-                sample_idx.append(d_minid)
+                if self.round == 0:
+                    print("First round: Sampling the nearest sample to the centroid")
+                    d_minid = np.argsort(d)
+                    d_minid = d_minid[0] # 最も近いサンプルのみ選択
+                    sample_idx.append(d_minid)
+                else:
+                    print("Subsequent rounds: Sampling the random samples in each cluster")
+                    sample_idx_in_cluster = np.where(kmeans.labels_ == cluster_id)[0]
+                    sample_idx.append(random.choice(sample_idx_in_cluster))
         sample_idx_trans = np.array(list(set(sample_idx)))
 
         assert max(sample_idx_trans) <= len(img_features), f"sample_idx is out of range"

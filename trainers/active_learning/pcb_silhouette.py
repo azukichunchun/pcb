@@ -52,8 +52,6 @@ class PCBSilhouette(AL):
 
         # クラスタ中心の真のラベルをもとにself.statisticsを更新
         for idx in self.cluster_centers:
-            if len(self.unlabeled_set) < idx:
-                print(idx)
             self.statistics[self.unlabeled_set[idx].label] += 1
             true_class_counts[self.unlabeled_set[idx].label] += 1
         
@@ -63,8 +61,7 @@ class PCBSilhouette(AL):
             sub_pred = (self.pred == min_cls).nonzero().squeeze(dim=1).tolist()
             if len(sub_pred) == 0:
                 num = random.randint(0, num_unlabeled-1)
-                while num in Q_index:
-                    if num not in self.cluster_centers:
+                while num in Q_index or num in self.cluster_centers:
                         num = random.randint(0, num_unlabeled-1)
                 Q_index.append(num)
             else:
@@ -77,8 +74,7 @@ class PCBSilhouette(AL):
                             break 
                 else: 
                     num = random.randint(0, num_unlabeled-1)
-                    while num in Q_index:
-                        if num not in self.cluster_centers:
+                    while num in Q_index or num in self.cluster_centers:
                             num = random.randint(0, num_unlabeled-1)
                     Q_index.append(num)
             true_class_counts[self.unlabeled_set[num].label] += 1

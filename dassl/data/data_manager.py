@@ -19,7 +19,8 @@ def build_data_loader(
     n_ins=2,
     tfm=None,
     is_train=True,
-    dataset_wrapper=None
+    dataset_wrapper=None,
+    query_weights=None,
 ):
     # Build sampler
     sampler = build_sampler(
@@ -32,11 +33,16 @@ def build_data_loader(
     )
 
     if dataset_wrapper is None:
-        dataset_wrapper = DatasetWrapper
+        dataset_wrapper = DatasetWrapper(cfg, data_source, transform=tfm, is_train=is_train,)
+
+    if query_weights is not None:
+        dataset_wrapper = DatasetWrapper(
+            cfg, data_source, transform=tfm, is_train=is_train, query_weights=query_weights
+        )
 
     # Build data loader
     data_loader = torch.utils.data.DataLoader(
-        dataset_wrapper(cfg, data_source, transform=tfm, is_train=is_train),
+        dataset_wrapper,
         batch_size=batch_size,
         sampler=sampler,
         num_workers=cfg.DATALOADER.NUM_WORKERS,
@@ -187,11 +193,12 @@ class DataManager:
 
 class DatasetWrapper(TorchDataset):
 
-    def __init__(self, cfg, data_source, transform=None, is_train=False):
+    def __init__(self, cfg, data_source, transform=None, is_train=False, query_weights=None):
         self.cfg = cfg
         self.data_source = data_source
         self.transform = transform  # accept list (tuple) as input
         self.is_train = is_train
+        self.query_weights = query_weights
         # Augmenting an image K>1 times is only allowed during training
         self.k_tfm = cfg.DATALOADER.K_TRANSFORMS if is_train else 1
         self.return_img0 = cfg.DATALOADER.RETURN_IMG0
@@ -219,12 +226,14 @@ class DatasetWrapper(TorchDataset):
 
     def __getitem__(self, idx):
         item = self.data_source[idx]
+        query_weight = self.query_weights[idx] if self.query_weights is not None else 1.0
 
         output = {
             "label": item.label,
             "domain": item.domain,
             "impath": item.impath,
-            "index": idx
+            "index": idx,
+            "query_weight": query_weight,
         }
 
         img0 = read_image(item.impath)

@@ -89,6 +89,9 @@ def extend_cfg(cfg):
     cfg.TRAIN.CURRICULUM = False
     cfg.TRAIN.MAX_ROUND = 8
     cfg.TRAIN.STOP_ROUND = 8
+    cfg.TRAIN.USE_PROX = False
+    cfg.TRAIN.USE_WEIGHTED_LOSS = False
+    cfg.TRAIN.W_LAST = 0.1
 
     cfg.TRAINER.COOP = CN()
     cfg.TRAINER.COOP.N_CTX = 16  # number of context vectors
@@ -148,9 +151,10 @@ def extend_cfg(cfg):
     cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
     cfg.DATASET.NUM_CLASS = 10
 
-    cfg.OPTIM_CONPROX = cfg.OPTIM.clone()
     cfg.OPTIM_PROX = cfg.OPTIM.clone()
-
+    cfg.OPTIM_PROX.NAME = "adam"
+    cfg.OPTIM_PROX.LR = 1e-3
+    cfg.OPTIM_PROX.WEIGHT_DECAY = 0.0
 
 def setup_cfg(args):
     cfg = get_cfg_default()

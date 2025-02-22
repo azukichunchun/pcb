@@ -301,6 +301,7 @@ class ALVLM(TrainerX):
     def __init__(self, cfg):
         super().__init__(cfg)
         self.acc = []
+        self.query_weights = []
         
     def check_cfg(self, cfg):
         assert cfg.TRAINER.COOP.PREC in ["fp16", "fp32", "amp"]
@@ -380,9 +381,11 @@ class ALVLM(TrainerX):
     def parse_batch_train(self, batch):
         input = batch["img"]
         label = batch["label"]
+        query_weight = batch["query_weight"]
         input = input.to(self.device)
         label = label.to(self.device)
-        return input, label
+        query_weight = query_weight.to(self.device)
+        return input, label, query_weight
 
     def load_model(self, directory, epoch=None, round=None):
         if not directory:
@@ -401,6 +404,9 @@ class ALVLM(TrainerX):
             model_file = f"{model_file}-{round}"
 
         for name in names:
+            if name == "contrastive":
+                continue
+
             model_path = osp.join(directory, name, model_file)
 
             if not osp.exists(model_path):
@@ -422,6 +428,9 @@ class ALVLM(TrainerX):
 
             if "prompt_learner.token_suffix" in state_dict:
                 del state_dict["prompt_learner.token_suffix"]
+
+            if "contrastive.centers" in state_dict:
+                del state_dict["contrastive.centers"]
 
 
             print("Loading weights to {} " 'from "{}" (epoch = {})'.format(name, model_path, epoch))
@@ -513,7 +522,7 @@ class ALVLM(TrainerX):
                         selector = Coreset(self.cfg, self.model, unlabeled_dst, U_index, val_x, dataset.get_num_classes(unlabeled_dst))
                         idx = selector.select(n_cand)
                 elif self.cfg.TRAINER.COOPAL.METHOD == "clustering_with_silhouette":
-                    selector = ClusteringSilhouette(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), n_cand, self.device)
+                    selector = ClusteringSilhouette(self.cfg, i, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), n_cand, self.device)
                     idx = selector.select(n_cand)
                 else:
                     print("NotImplementedError")
@@ -531,13 +540,25 @@ class ALVLM(TrainerX):
                 selector = PCB_FILL(self.cfg, self.model, unlabeled_dst, idx, dataset.get_num_classes(unlabeled_dst), statistics, self.device)
 
             idx = selector.select(n_query)
-        
+
+            # 重みを計算
+            if self.cfg.TRAIN.USE_WEIGHTED_LOSS:
+                w = 1.0-(1.0-self.cfg.TRAIN.W_LAST) * i/self.cfg.TRAIN.MAX_ROUND
+                w = [w] * len(idx)
+                #self.query_weights = w + self.query_weights # 1つ前のラウンドのサンプルの重みを減衰させるため手前に結合
+                self.query_weights.extend(w)
+            else:
+                self.query_weights.extend([1.0]*len(idx))
+
             # Filtering 
             for k in idx:
                 dataset._train_x.append(unlabeled_dst[k])
                 query_impath.append(unlabeled_dst[k].impath)
                 U_index.remove(k)
+            
+            assert len(self.query_weights) == len(dataset.train_x), f"{len(self.query_weights)} != {len(dataset.train_x)}"
             assert len(U_index) + len(dataset.train_x) == len(unlabeled_dst), f"u index: {len(U_index)}\t train set: {len(dataset.train_x)}\t unlabeled_dst: {len(unlabeled_dst)}"
+            
             self.train_loader_x = build_data_loader(
                 self.cfg,
                 sampler_type=self.cfg.DATALOADER.TRAIN_X.SAMPLER,
@@ -547,7 +568,8 @@ class ALVLM(TrainerX):
                 n_ins=self.cfg.DATALOADER.TRAIN_X.N_INS,
                 tfm=build_transform(self.cfg, is_train=True),
                 is_train=True,
-                dataset_wrapper=None
+                dataset_wrapper=None,
+                query_weights=self.query_weights
             )
             # self.model.train()
             self.before_train()

@@ -21,6 +21,7 @@ from .active_learning.coreset import Coreset
 from .active_learning.entropy import Entropy
 from .active_learning.clustering import Clustering
 from .alvlm import ALVLM
+from .contrastive import Proximity
 import pdb
 
 _tokenizer = _Tokenizer()
@@ -211,8 +212,13 @@ class CustomCLIP(nn.Module):
         self.logit_scale = clip_model.logit_scale
         self.dtype = clip_model.dtype
         self.cfg = cfg
+        self.n_cls = len(classnames)
 
-    def forward(self, image, label=None, get_feature=False):
+        if self.cfg.TRAIN.USE_PROX:
+            ndim = clip_model.ln_final.weight.shape[0]
+            self.contrastive = Proximity(len(classnames), ndim, torch.float16, True)
+
+    def forward(self, image, label=None, get_feature=False, query_weight=None):
         tokenized_prompts = self.tokenized_prompts
         logit_scale = self.logit_scale.exp()
 
@@ -226,11 +232,31 @@ class CustomCLIP(nn.Module):
 
         if get_feature:
             return logits, image_features
-
+        
         if self.prompt_learner.training:
-            return F.cross_entropy(logits, label)
+            if self.cfg.TRAIN.USE_WEIGHTED_LOSS:
+                loss_ce = F.cross_entropy(logits, label, reduction="none")
+                loss_ce = loss_ce * query_weight
+                loss_ce = loss_ce.mean()
+            else:
+                loss_ce = F.cross_entropy(logits, label)
+
+            if self.cfg.TRAIN.USE_PROX:
+                loss_prox = self.proximity(image_features, text_features, label)
+                loss = loss_ce + 0.001*loss_prox
+                return loss
+            return loss_ce
 
         return logits
+
+    def proximity(self, image_features, text_features, label):
+        # image_features: (bs x aug_time) x 512, text_features: (n_cls x desc_per_batch) x 512
+        # label: bs
+        all_features = torch.cat([image_features, text_features], dim=0) # (bs x aug_time + n_cls x desc_per_batch) x 512
+        all_labels = torch.cat([label.reshape(-1), torch.arange(self.n_cls).to(label.device)]) # bs x aug_time + n_cls x desc_per_batch
+        prox_loss = self.contrastive(all_features, all_labels)
+
+        return prox_loss
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
@@ -264,7 +290,7 @@ class ALVLM_MaPLe(ALVLM):
         for name, param in self.model.named_parameters():
             if name_to_update not in name:
                 # Make sure that VPT prompts are updated
-                if "VPT" in name:
+                if ("VPT" in name) or ("centers" in name):
                     param.requires_grad_(True)
                 else:
                     param.requires_grad_(False)
@@ -285,6 +311,11 @@ class ALVLM_MaPLe(ALVLM):
         self.sched = build_lr_scheduler(self.optim, cfg.OPTIM)
         self.register_model("MultiModalPromptLearner", self.model, self.optim, self.sched)
 
+        if self.cfg.TRAIN.USE_PROX:
+            self.optim_contrastive = build_optimizer(self.model.contrastive, cfg.OPTIM_PROX)
+            self.sched_contrastive = build_lr_scheduler(self.optim_contrastive, cfg.OPTIM_PROX)
+            self.register_model("contrastive", self.model.contrastive, self.optim_contrastive, self.sched_contrastive)
+
         self.scaler = GradScaler() if cfg.TRAINER.MAPLE.PREC == "amp" else None
 
         # Note that multi-gpu training could be slow because CLIP's size is
@@ -295,7 +326,7 @@ class ALVLM_MaPLe(ALVLM):
         #     self.model = nn.DataParallel(self.model)
 
     def forward_backward(self, batch):
-        image, label = self.parse_batch_train(batch)
+        image, label, query_weight = self.parse_batch_train(batch)
 
         model = self.model
         optim = self.optim
@@ -310,7 +341,7 @@ class ALVLM_MaPLe(ALVLM):
             scaler.step(optim)
             scaler.update()
         else:
-            loss = model(image, label)
+            loss = model(image=image, label=label, get_feature=False, query_weight=query_weight)
             optim.zero_grad()
             loss.backward()
             optim.step()
