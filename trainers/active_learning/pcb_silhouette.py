@@ -63,7 +63,8 @@ class PCBSilhouette(AL):
                 num = random.randint(0, num_unlabeled-1)
                 while num in Q_index or num in self.cluster_centers:
                         num = random.randint(0, num_unlabeled-1)
-                Q_index.append(num)
+                if num not in Q_index:  # 追加前に再チェック
+                    Q_index.append(num)
             else:
                 random.shuffle(sub_pred)
                 for num in sub_pred:
@@ -76,9 +77,13 @@ class PCBSilhouette(AL):
                     num = random.randint(0, num_unlabeled-1)
                     while num in Q_index or num in self.cluster_centers:
                             num = random.randint(0, num_unlabeled-1)
-                    Q_index.append(num)
+                    if num not in Q_index:            
+                        Q_index.append(num)
             true_class_counts[self.unlabeled_set[num].label] += 1
             print(true_class_counts)
 
         Q_index = [self.U_index[idx] for idx in Q_index]
+
+        assert len(Q_index) == len(set(Q_index)), f"Q_index contains duplicate indices"
+
         return Q_index

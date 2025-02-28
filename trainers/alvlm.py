@@ -28,9 +28,10 @@ from .active_learning.entropy import Entropy
 from .active_learning.clustering import Clustering
 from .active_learning.clustering_one_sample import ClusteringOneSample
 from .active_learning.clustering_with_silhouette import ClusteringSilhouette
+from .active_learning.clustering_with_silhouette_badge import ClusteringSilhouetteBadge
+from .active_learning.clustering_with_silhouette_use_badge_score import ClusteringSilhouetteUseBadgeScore
 
 _tokenizer = _Tokenizer()
-
 
 
 def load_clip_to_cpu(cfg):
@@ -255,7 +256,7 @@ class CustomCLIP(nn.Module):
                 self.n_class_desc.append(len(desc_dict[name]))
             
         
-    def forward(self, image, get_feature=False):
+    def forward(self, image, get_feature=False, query_weight=None):
         image_features = self.image_encoder(image.type(self.dtype))
         
         prompts = self.prompt_learner()
@@ -352,7 +353,7 @@ class ALVLM(TrainerX):
             #print(self.model)
 
     def forward_backward(self, batch):
-        image, label = self.parse_batch_train(batch)
+        image, label, query_weight = self.parse_batch_train(batch)
         
         prec = self.cfg.TRAINER.COOP.PREC
         if prec == "amp":
@@ -364,12 +365,16 @@ class ALVLM(TrainerX):
             self.scaler.step(self.optim)
             self.scaler.update()
         else:
-            output = self.model(image)
-            loss = F.cross_entropy(output, label)
-            self.model_backward_and_update(loss)
+            output = self.model(image=image, get_feature=False, query_weight=query_weight)
+            if self.cfg.TRAIN.USE_WEIGHTED_LOSS:
+                loss_ce = F.cross_entropy(output, label, reduction="none")
+                loss_ce = (loss_ce * query_weight).mean()
+            else:
+                loss_ce = F.cross_entropy(output, label)
+            self.model_backward_and_update(loss_ce)
 
         loss_summary = {
-            "loss": loss.item(),
+            "loss": loss_ce.item(),
             "acc": compute_accuracy(output, label)[0].item(),
         }
 
@@ -432,7 +437,6 @@ class ALVLM(TrainerX):
             if "contrastive.centers" in state_dict:
                 del state_dict["contrastive.centers"]
 
-
             print("Loading weights to {} " 'from "{}" (epoch = {})'.format(name, model_path, epoch))
             # set strict=False
             self._models[name].load_state_dict(state_dict, strict=False)
@@ -489,7 +493,6 @@ class ALVLM(TrainerX):
         else:
             n_query = dataset.get_num_classes(unlabeled_dst)
         n_cand = int(len(unlabeled_dst) * self.cfg.TRAINER.COOPAL.GAMMA) # 10% of entire dataset
-        #n_cand = int(len(unlabeled_dst) * 1.0) # entire dataset
         dataset._train_x = []
 
         query_impath = []
@@ -524,6 +527,12 @@ class ALVLM(TrainerX):
                 elif self.cfg.TRAINER.COOPAL.METHOD == "clustering_with_silhouette":
                     selector = ClusteringSilhouette(self.cfg, i, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), n_cand, self.device)
                     idx = selector.select(n_cand)
+                elif self.cfg.TRAINER.COOPAL.METHOD == "clustering_with_silhouette_badge":
+                    selector = ClusteringSilhouetteBadge(self.cfg, i, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), n_cand, self.device)
+                    idx = selector.select(n_cand)
+                elif self.cfg.TRAINER.COOPAL.METHOD == "clustering_with_silhouette_use_badge_score":
+                    selector = ClusteringSilhouetteUseBadgeScore(self.cfg, i, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), n_cand, self.device)
+                    idx = selector.select(n_cand)
                 else:
                     print("NotImplementedError")
                     idx = U_index
@@ -532,7 +541,7 @@ class ALVLM(TrainerX):
             statistics = torch.zeros(self.num_classes)
             for elem in dataset._train_x:
                 statistics[elem.label] += 1
-            if self.cfg.TRAINER.COOPAL.METHOD == "clustering_with_silhouette":
+            if self.cfg.TRAINER.COOPAL.METHOD in ["clustering_with_silhouette", "clustering_with_silhouette_use_badge_score"]:
                 selector = PCBSilhouette(self.cfg, i, self.model, unlabeled_dst, idx, dataset.get_num_classes(unlabeled_dst), statistics, self.device)
             elif self.cfg.TRAIN.ONE_TIME_SAMPLING:
                 selector = PCB_ONE_TIME(self.cfg, i, self.model, unlabeled_dst, idx, dataset.get_num_classes(unlabeled_dst), statistics, self.device)
@@ -545,8 +554,8 @@ class ALVLM(TrainerX):
             if self.cfg.TRAIN.USE_WEIGHTED_LOSS:
                 w = 1.0-(1.0-self.cfg.TRAIN.W_LAST) * i/self.cfg.TRAIN.MAX_ROUND
                 w = [w] * len(idx)
-                #self.query_weights = w + self.query_weights # 1つ前のラウンドのサンプルの重みを減衰させるため手前に結合
-                self.query_weights.extend(w)
+                self.query_weights = w + self.query_weights # 1つ前のラウンドのサンプルの重みを減衰させるため手前に結合
+                #self.query_weights.extend(w)
             else:
                 self.query_weights.extend([1.0]*len(idx))
 

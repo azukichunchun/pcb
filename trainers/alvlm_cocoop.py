@@ -26,7 +26,6 @@ from .active_learning.coreset import Coreset
 from .active_learning.entropy import Entropy
 from .active_learning.clustering import Clustering
 from .alvlm import ALVLM
-import pdb
 
 _tokenizer = _Tokenizer()
 
@@ -293,7 +292,7 @@ class CustomCLIP(nn.Module):
                 self.n_class_desc.append(len(desc_dict[name]))
 
 
-    def forward(self, image, label=None, get_feature=False, use_template=False):
+    def forward(self, image, label=None, get_feature=False, use_template=False, query_weight=None):
 
         tokenized_prompts = self.tokenized_prompts
         logit_scale = self.logit_scale.exp()
@@ -326,8 +325,14 @@ class CustomCLIP(nn.Module):
                 return logits
 
         elif self.prompt_learner.training:
-            return F.cross_entropy(logits, label)
-        
+            if self.cfg.TRAIN.USE_WEIGHTED_LOSS:
+                loss_ce = F.cross_entropy(logits, label, reduction="none")
+                loss_ce = loss_ce * query_weight
+                loss_ce = loss_ce.mean()
+            else:
+                loss_ce = F.cross_entropy(logits, label)
+            return loss_ce
+
         else:
             return logits
 
@@ -395,7 +400,7 @@ class ALVLM_CoCoOp(ALVLM):
         #     #print(self.model)
 
     def forward_backward(self, batch):
-        image, label = self.parse_batch_train(batch)
+        image, label, query_weight = self.parse_batch_train(batch)
         
         model = self.model
         optim = self.optim
@@ -410,7 +415,7 @@ class ALVLM_CoCoOp(ALVLM):
             scaler.step(optim)
             scaler.update()
         else:
-            loss = model(image, label)
+            loss = model(image=image, label=label, get_feature=False, use_template=False, query_weight=query_weight.to(torch.float16))
             optim.zero_grad()
             loss.backward()
             optim.step()

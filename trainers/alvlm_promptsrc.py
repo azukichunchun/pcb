@@ -182,8 +182,9 @@ class CustomCLIP(nn.Module):
         self.dtype = clip_model.dtype
         self.total_epochs = cfg.OPTIM.MAX_EPOCH
         self.n_cls = len(classnames)
+        self.cfg = cfg
 
-    def forward(self, image, label=None, get_feature=False):
+    def forward(self, image, label=None, get_feature=False, query_weight=None):
         tokenized_prompts = self.tokenized_prompts
         logit_scale = self.logit_scale.exp()
 
@@ -205,8 +206,13 @@ class CustomCLIP(nn.Module):
                 # Compute pre-trained frozen visual features
                 zero_shot_logits = logit_scale * zero_shot_features.cuda() @ fixed_embeddings.half().cuda().t()
 
-            return F.cross_entropy(logits,
-                                   label), text_features, fixed_embeddings, zero_shot_features, \
+            if self.cfg.TRAIN.USE_WEIGHTED_LOSS:
+                loss_ce = F.cross_entropy(logits, label, reduction='none')
+                loss_ce = (loss_ce * query_weight).mean()
+            else:
+                loss_ce = F.cross_entropy(logits, label)
+
+            return loss_ce, text_features, fixed_embeddings, zero_shot_features, \
                    image_features, zero_shot_logits, logits
         elif get_feature:
             return logits, image_features
@@ -282,7 +288,7 @@ class ALVLM_PromptSRC(ALVLM):
         self.previous_model_gpa = None
 
     def forward_backward(self, batch):
-        image, label = self.parse_batch_train(batch)
+        image, label, query_weight = self.parse_batch_train(batch)
 
         model = self.model
         optim = self.optim
@@ -298,7 +304,7 @@ class ALVLM_PromptSRC(ALVLM):
             scaler.update()
         else:
             loss_ce, normalized_text_features, zs_clip_text_embeddings, zs_image_embedd, image_ft, \
-            zero_shot_logits, logits = model(image, label)
+            zero_shot_logits, logits = model(image=image, label=label, get_feature=False, query_weight=query_weight)
             # Calculate the L_SCL_text loss
             loss_scl_text = F.l1_loss(normalized_text_features, zs_clip_text_embeddings.cuda(),
                                       reduction='mean') * self.cfg.TRAINER.PROMPTSRC.TEXT_LOSS_WEIGHT

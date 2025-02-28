@@ -14,13 +14,14 @@ seeds = ["seed1", "seed2","seed3"]
 #seeds = ["seed1", "seed2"]
 datasets = ["oxford_flowers", "dtd", "oxford_pets", "eurosat", "caltech101", "stanford_cars", "fgvc_aircraft",]
 trainers = ["ALVLM_PromptSRC_random","ALVLM_PromptSRC_entropy", "ALVLM_PromptSRC_badge", "ALVLM_PromptSRC_coreset", "ALVLM_PromptSRC_clustering_with_silhouette"]
-#trainers = ["ALVLM_MaPLe_random","ALVLM_MaPLe_entropy", "ALVLM_MaPLe_badge", "ALVLM_MaPLe_coreset", "ALVLM_MaPLe_clustering_with_silhouette"]
-#trainers = ["ALVLM_CoCoOp_random","ALVLM_CoCoOp_entropy", "ALVLM_CoCoOp_badge", "ALVLM_CoCoOp_coreset", "ALVLM_CoCoOp_clustering_with_silhouette"]
+trainers = ["ALVLM_MaPLe_random","ALVLM_MaPLe_entropy", "ALVLM_MaPLe_badge", "ALVLM_MaPLe_coreset", "ALVLM_MaPLe_clustering_with_silhouette"]
+trainers = ["ALVLM_CoCoOp_random","ALVLM_CoCoOp_entropy", "ALVLM_CoCoOp_badge", "ALVLM_CoCoOp_coreset", "ALVLM_CoCoOp_clustering_with_silhouette_use_badge_score"]
 #trainers = ["ALVLM_random","ALVLM_entropy", "ALVLM_badge", "ALVLM_coreset", "ALVLM_clustering_with_silhouette"]
+
+target_rnd = 7
 
 begin_signal = "=== Result Overview ==="
 end_signal = "======================="
-
 
 # accuracyを抽出する関数
 def extract_accuracy_from_log(file_path):
@@ -64,9 +65,9 @@ def main():
             for style, base_path in base_paths.items():
                 for shot in shots:
                     for seed in seeds:
-                        if "curriculum" in trainer:
-                            cfg = "vit_b16_one_time_miru2025_curriculum_phase_1"
-                            trainer_for_path  = trainer.replace("_curriculum", "")
+                        if "clustering_with_silhouette" in trainer:
+                            cfg = "vit_b16_one_time_miru2025_weights"
+                            trainer_for_path  = trainer
                         else:
                             cfg = "vit_b16_one_time_miru2025"
                             trainer_for_path = trainer
@@ -90,7 +91,7 @@ def main():
                 for style, vals in accs.items():
                     avg = np.mean(vals)
                     std = np.std(vals)
-                    if style == "harmonic_mean" and rnd == 5:
+                    if style == "harmonic_mean" and rnd == target_rnd:
                     #if style == "harmonic_mean":
                         agg_ave.append(avg)
                         #print(f"{rnd} : {avg:.2f} +- {std:.2f}")
@@ -98,6 +99,7 @@ def main():
                         res.append((f"{avg:.2f}{backslash}small{{${backslash}pm${std:.2f}}}"))
         method = trainer.split("_")[-1]
         print(f"& PCB({method})" + " & " + " & ".join(res) + f" & {np.mean(agg_ave):.2f} \\\\")
+        #print(f"PCB({method})" + f"{np.mean(agg_ave):.2f} \\\\")
 
 # スクリプトを実行
 main()

@@ -38,6 +38,7 @@ class PCB(AL):
             img_features = []
             img_paths = []
             img_labels = []
+            img_preds = []
             for i, batch in enumerate(unlabeled_loader):
                 inputs = batch["img"].to(self.device)
                 out, features = self.model(inputs, get_feature=True)
@@ -48,6 +49,7 @@ class PCB(AL):
                 img_features.append(features)
                 img_paths.append(batch["impath"])
                 img_labels.append(batch["label"])
+                img_preds.append(maxInds.detach().cpu())
         self.pred = torch.cat(self.pred)
         
         if self.round == 0:
@@ -57,6 +59,8 @@ class PCB(AL):
                 pickle.dump(img_paths, f)
             with open(f"{self.cfg.OUTPUT_DIR}/img_labels_dtd.pkl", "wb") as f:
                 pickle.dump(img_labels, f)
+            with open(f"{self.cfg.OUTPUT_DIR}/img_preds_dtd.pkl", "wb") as f:
+                pickle.dump(img_preds, f)
 
         Q_index = []
         true_class_counts = copy.deepcopy(self.statistics)

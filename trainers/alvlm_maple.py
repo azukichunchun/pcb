@@ -213,6 +213,7 @@ class CustomCLIP(nn.Module):
         self.dtype = clip_model.dtype
         self.cfg = cfg
         self.n_cls = len(classnames)
+        #self.negative_prompt = self.get_negative_prompt(classnames)
 
         if self.cfg.TRAIN.USE_PROX:
             ndim = clip_model.ln_final.weight.shape[0]
@@ -257,6 +258,15 @@ class CustomCLIP(nn.Module):
         prox_loss = self.contrastive(all_features, all_labels)
 
         return prox_loss
+    
+    def get_negative_prompt(self, classnames):
+        neg_prompts = []
+        for c in classnames:
+            neg_prompts.append(clip.tokenize(f"This is not {c}."))
+        neg_prompts = torch.vstack(neg_prompts)
+        neg_text_features = self.text_encoder(neg_prompts, neg_prompts.argmax(dim=-1), 0)
+        return neg_text_features
+
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
